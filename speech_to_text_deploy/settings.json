@@ -21,6 +21,8 @@
   "source_audio": null,
   "replay_realtime": true,
   "min_free_bytes": 268435456,
+  "save_audio": false,
+  "save_transcript": false,
   "output_base": "research_output_gathering/output",
   "bounded_worker_timeout_seconds": 3600,
   "continuous_worker_timeout_seconds": null,

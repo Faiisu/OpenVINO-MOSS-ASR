@@ -52,11 +52,12 @@ def capture_segments(folder, stop, *, segment_seconds=30, samplerate=48000,
                      internet_time_timeout_seconds=1.0,
                      max_audio_seconds=None, source_audio=None,
                      replay_realtime=True, min_free_bytes=256 * 1024**2,
-                     on_audio_chunk=None):
+                     on_audio_chunk=None, save_metadata=True):
     """Yield closed WAVs; preserve a final partial segment on stop or file EOF.
 
     UTC times estimate capture from stream start; offsets are sample accurate.
     Replay uses the file's native rate/channels/precision and optional pacing.
+    Set ``save_metadata=False`` when segment WAVs are temporary inference inputs.
     Input overflow is fatal because the sample timeline would no longer be valid.
     Live input reserves a buffer for scheduling and inference-cleanup pauses.
     """
@@ -133,6 +134,7 @@ def capture_segments(folder, stop, *, segment_seconds=30, samplerate=48000,
                 (origin_utc + timedelta(seconds=total_frames / rate)).isoformat(),
                 timestamp_source, ready_at,
             )
-            path.with_suffix(".json").write_text(
-                json.dumps(item.metadata(), indent=2), encoding="utf-8")
+            if save_metadata:
+                path.with_suffix(".json").write_text(
+                    json.dumps(item.metadata(), indent=2), encoding="utf-8")
             yield item

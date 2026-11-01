@@ -22,23 +22,27 @@
       <div><div class="eyebrow">SPEECH INTELLIGENCE</div><h1>Listen. Transcribe. Observe.</h1><p>Live output from your speech collection pipeline.</p></div>
       <button id="pause" class="button secondary" aria-pressed="false">Pause updates</button>
     </section>
-    <section class="run-toolbar" aria-label="Run selection">
+    <section id="run-toolbar" class="run-toolbar" aria-label="Run selection">
       <div class="run-select"><label for="run">COLLECTION RUN</label><select id="run"><option value="">Waiting for a run…</option></select></div>
       <label class="follow"><input id="follow" type="checkbox" checked> Follow newest run</label>
       <div class="refresh-note"><span class="pulse"></span>Auto-refresh · 1 s</div>
     </section>
-    <section class="live-audio-panel panel" aria-label="Live audio listener">
+    <section id="live-audio-panel" class="live-audio-panel panel" aria-label="Live audio listener">
       <div><h2>Live audio</h2><p>Listen to the capture while the ASR flow is running.</p><span id="live-audio-status" class="quiet">Not connected</span></div>
-      <div class="live-audio-controls"><button id="live-audio-toggle" class="button secondary" type="button">Listen live</button><label for="live-audio-volume">Volume <input id="live-audio-volume" type="range" min="0" max="1" step="0.05" value="0.8"></label></div>
+      <div class="live-audio-controls"><button id="live-audio-toggle" class="button secondary" type="button">Listen live</button><div class="live-audio-meter"><span>Input level</span><div class="live-audio-meter-track" role="meter" aria-label="Live input loudness" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="No live audio"><div id="live-audio-level-bar"></div></div><output id="live-audio-level-value">—</output></div><label for="live-audio-volume">Playback volume <input id="live-audio-volume" type="range" min="0" max="1" step="0.05" value="0.8"></label></div>
+    </section>
+    <section id="mqtt-live-panel" class="mqtt-live-panel panel" aria-label="Live MQTT transcripts" hidden>
+      <div class="panel-heading"><div><h2>Live MQTT transcripts</h2><p>Messages arrive directly from MQTT. This view is temporary and clears when the page reloads.</p></div><span id="mqtt-live-status" class="quiet">Connecting to MQTT…</span></div>
+      <div id="mqtt-live-events" class="mqtt-live-events"><p class="empty">Waiting for the next MQTT transcript…</p></div>
     </section>
     <div id="notice" class="notice" role="status" hidden></div>
-    <section class="metrics" aria-label="Run metrics">
+    <section id="metrics" class="metrics" aria-label="Run metrics">
       <article class="metric"><span class="metric-label">AUDIO PROCESSED</span><div id="metric-audio" class="metric-value">—</div><span id="metric-windows" class="metric-detail">Waiting for completed windows</span></article>
       <article class="metric"><span class="metric-label">SAVED UTTERANCES</span><div id="metric-clips" class="metric-value">—</div><span id="metric-rejected" class="metric-detail">Timestamp-aligned audio clips</span></article>
       <article class="metric"><span class="metric-label">AWAITING RESULTS</span><div id="metric-pending" class="metric-value">—</div><span id="metric-captured" class="metric-detail">Captured audio windows</span></article>
       <article class="metric accent"><span class="metric-label">DURATION-WEIGHTED RTF</span><div id="metric-rtf" class="metric-value">—</div><span class="metric-detail">Includes queue wait · lower is faster</span></article>
     </section>
-    <div class="workspace">
+    <div id="workspace" class="workspace">
       <section class="transcript-panel panel">
         <div class="panel-heading"><div><h2>Live transcript <span id="status" class="badge">Waiting</span></h2><p>Speech, speakers, and the audio behind every line.</p></div><span id="visible-count" class="quiet"></span></div>
         <div class="search-row"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search visible transcript or speaker…" aria-label="Search visible transcript or speaker"><kbd>/</kbd></div>

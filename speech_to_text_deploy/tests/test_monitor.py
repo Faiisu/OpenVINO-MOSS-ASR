@@ -20,6 +20,7 @@ from speech_to_text_deploy.monitor.data import MonitorStore, RunIndex
 from speech_to_text_deploy.monitor.server import MonitorServer
 from speech_to_text_deploy.outputs.clips import export_timed_clips
 from speech_to_text_deploy.audio.live_audio import LiveAudioForwarder
+from speech_to_text_deploy.monitor.mqtt import LiveTranscriptHub
 
 
 class MonitorTests(unittest.TestCase):
@@ -79,6 +80,16 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(snapshot["stats"]["weighted_rtf"], .1)
         self.assertEqual(snapshot["windows"][0]["error"], failed["error"])
         self.assertEqual(store.snapshot(self.root.name)["stats"]["reported_windows"], 2)
+
+    def test_live_mqtt_hub_does_not_replay_events_before_new_page_connection(self):
+        hub = LiveTranscriptHub()
+        hub.publish({"transcript": "Earlier", "start_time": "t1", "end_time": "t2"})
+        page_cursor = hub.latest_sequence
+        hub.publish({"transcript": "Live now", "start_time": "t3", "end_time": "t4"})
+        events = hub.after(page_cursor, timeout=0)
+        self.assertEqual([event["transcript"] for event in events], ["Live now"])
+        with self.assertRaisesRegex(ValueError, "must contain text"):
+            hub.publish({"transcript": "Missing timestamps"})
 
     def test_recent_memory_is_bounded_and_csv_replacement_resets_totals(self):
         index = RunIndex(self.root)

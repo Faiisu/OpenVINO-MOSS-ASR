@@ -2,6 +2,8 @@
 
 const $ = (id) => document.getElementById(id);
 const state = { run: null, paused: false, before: null, data: null, rendered: new Map(), runsKey: "" };
+let mqttLiveOnly = false;
+let mqttTranscriptSource = null;
 const labels = { collecting: "Collecting", starting: "Starting", draining: "Draining", success: "Completed", success_with_warnings: "Completed with warnings", failed: "Failed", inactive: "Inactive", partial: "Partial", no_speech: "No speech", not_processed: "Not processed" };
 const fmt = (n, digits = 2) => n == null ? "—" : Number(n).toFixed(digits);
 const text = (id, value) => { $(id).textContent = value; };
@@ -163,6 +165,24 @@ function render(data) {
 }
 
 const liveAudio = { source: null, context: null, gain: null, nextTime: 0 };
+function resetLiveAudioLevel() {
+  const meter = $("live-audio-level-bar").parentElement;
+  $("live-audio-level-bar").style.width = "0%";
+  $("live-audio-level-value").textContent = "—";
+  meter.setAttribute("aria-valuenow", "0");
+  meter.setAttribute("aria-valuetext", "No live audio");
+}
+function updateLiveAudioLevel(rms, peak) {
+  const floorDb = -60;
+  const rmsDb = 20 * Math.log10(Math.max(rms, 1 / 32768));
+  const peakDb = 20 * Math.log10(Math.max(peak, 1 / 32768));
+  const level = Math.max(0, Math.min(100, ((rmsDb - floorDb) / -floorDb) * 100));
+  const meter = $("live-audio-level-bar").parentElement;
+  $("live-audio-level-bar").style.width = `${level}%`;
+  $("live-audio-level-value").textContent = `RMS ${rmsDb.toFixed(1)} dBFS · Peak ${peakDb.toFixed(1)} dBFS`;
+  meter.setAttribute("aria-valuenow", level.toFixed(0));
+  meter.setAttribute("aria-valuetext", `RMS ${rmsDb.toFixed(1)} dBFS, peak ${peakDb.toFixed(1)} dBFS`);
+}
 function stopLiveAudio() {
   if (liveAudio.source) liveAudio.source.close();
   if (liveAudio.context) liveAudio.context.close();
@@ -170,6 +190,7 @@ function stopLiveAudio() {
   liveAudio.nextTime = 0;
   $("live-audio-toggle").textContent = "Listen live";
   text("live-audio-status", "Not connected");
+  resetLiveAudioLevel();
 }
 function playLiveChunk(packet) {
   if (!liveAudio.context || !liveAudio.gain) return;
@@ -179,7 +200,15 @@ function playLiveChunk(packet) {
   const sampleCount = Math.floor(binary.length / 2);
   const buffer = liveAudio.context.createBuffer(1, sampleCount, packet.sample_rate);
   const channel = buffer.getChannelData(0);
-  for (let index = 0; index < sampleCount; index++) channel[index] = samples.getInt16(index * 2, true) / 32768;
+  let sumSquares = 0;
+  let peak = 0;
+  for (let index = 0; index < sampleCount; index++) {
+    const sample = samples.getInt16(index * 2, true) / 32768;
+    channel[index] = sample;
+    sumSquares += sample * sample;
+    peak = Math.max(peak, Math.abs(sample));
+  }
+  updateLiveAudioLevel(sampleCount ? Math.sqrt(sumSquares / sampleCount) : 0, peak);
   const source = liveAudio.context.createBufferSource(); source.buffer = buffer; source.connect(liveAudio.gain);
   const startAt = Math.max(liveAudio.nextTime, liveAudio.context.currentTime + 0.03);
   source.start(startAt); liveAudio.nextTime = startAt + buffer.duration;
@@ -200,7 +229,7 @@ $("live-audio-toggle").addEventListener("click", async () => {
       try { playLiveChunk(JSON.parse(event.data)); text("live-audio-status", "Playing live capture"); }
       catch { text("live-audio-status", "Received an invalid audio chunk."); }
     };
-    liveAudio.source.onerror = () => text("live-audio-status", "Reconnecting to live capture…");
+    liveAudio.source.onerror = () => { text("live-audio-status", "Reconnecting to live capture…"); resetLiveAudioLevel(); };
   } catch (error) { stopLiveAudio(); text("live-audio-status", `Could not start live audio (${error.message}).`); }
 });
 $("live-audio-volume").addEventListener("input", () => {
@@ -220,7 +249,54 @@ $("export-dataset").addEventListener("click", async () => {
 });
 
 function changeRun(id) { state.run = id; state.before = null; state.rendered.clear(); $("windows").replaceChildren(); }
+function renderMqttTranscript(message) {
+  const target = $("mqtt-live-events");
+  if (target.firstElementChild?.classList.contains("empty")) target.replaceChildren();
+  const event = node("article", "mqtt-live-event");
+  const start = message.start_time ? new Date(message.start_time).toLocaleTimeString() : "Unknown start";
+  const end = message.end_time ? new Date(message.end_time).toLocaleTimeString() : "Unknown end";
+  event.append(node("time", "mqtt-live-time", `${start} – ${end}`));
+  event.append(node("p", "mqtt-live-text", message.transcript));
+  target.append(event);
+  while (target.children.length > 100) target.firstElementChild.remove();
+  text("mqtt-live-status", "Receiving MQTT transcripts");
+}
+function connectLiveMqtt() {
+  mqttTranscriptSource = new EventSource("/api/live-transcript/stream");
+  mqttTranscriptSource.onopen = () => text("mqtt-live-status", "Connected · waiting for MQTT transcripts");
+  mqttTranscriptSource.onmessage = (event) => {
+    try {
+      const message = JSON.parse(event.data);
+      if (typeof message.transcript !== "string") throw new Error("Missing transcript");
+      renderMqttTranscript(message);
+    } catch { text("mqtt-live-status", "Received an invalid MQTT transcript."); }
+  };
+  mqttTranscriptSource.onerror = () => text("mqtt-live-status", "Reconnecting to MQTT stream…");
+}
+async function initializeMonitor() {
+  try {
+    const settings = await fetchJSON("/api/settings");
+    if (!settings.save_audio) $("live-audio-panel").hidden = true;
+    if (!settings.save_transcript) {
+      mqttLiveOnly = true;
+      $("run-toolbar").hidden = true;
+      $("metrics").hidden = true;
+      $("workspace").hidden = true;
+      $("pause").hidden = true;
+      $("mqtt-live-panel").hidden = false;
+      $("connection").className = "connection connected";
+      $("connection").replaceChildren(node("i"), document.createTextNode("Connected"));
+      if (settings.mqtt_enabled) connectLiveMqtt();
+      else text("mqtt-live-status", "MQTT is disabled in settings.");
+      return;
+    }
+  } catch (error) {
+    notice(`Could not load monitor settings (${error.message}).`);
+  }
+  refresh();
+}
 async function refresh() {
+  if (mqttLiveOnly) return;
   try {
     const { runs } = await fetchJSON("/api/runs");
     const key = runs.map((run) => run.id).join("|");
@@ -243,4 +319,4 @@ $("search").addEventListener("input", applySearch);
 $("older").addEventListener("click", async () => { if (!state.data?.windows.length) return; const before = Math.min(...state.data.windows.map((win) => win.index)); try { const data = await fetchJSON(`/api/runs/${encodeURIComponent(state.run)}?before=${before}`); state.before = before; render(data); } catch { notice("Could not load older windows. Please retry."); } });
 $("live").addEventListener("click", () => { state.before = null; state.paused = false; $("pause").setAttribute("aria-pressed", "false"); text("pause", "Pause updates"); notice(""); });
 document.addEventListener("keydown", (event) => { if (event.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) { event.preventDefault(); $("search").focus(); } });
-refresh();
+initializeMonitor();

@@ -158,6 +158,23 @@ class GatheringTests(unittest.TestCase):
             self.assertEqual(export_timed_clips(source, root / "result", "raw", [], capture), 0)
             self.assertEqual(json.loads((root / "result/transcript.json").read_text())["status"], "no_segments")
 
+    def test_clip_export_can_return_mqtt_data_without_persisting_audio_or_transcript(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.wav"
+            sf.write(source, np.arange(20, dtype=np.int16), 10, subtype="PCM_16")
+            capture = {"offset_seconds": 5,
+                       "capture_start_utc": "2026-11-01T00:00:00+00:00"}
+            count, manifest = export_timed_clips(
+                source, root / "result", "transcript output",
+                [Segment(.2, .7, "S1", "Moss message")], capture,
+                save_audio=False, save_transcript=False, return_manifest=True)
+            self.assertEqual(count, 1)
+            self.assertEqual(list((root / "result").iterdir()), [])
+            self.assertEqual(manifest["segments"][0]["text"], "Moss message")
+            self.assertEqual(manifest["segments"][0]["model_start_utc"],
+                             "2026-11-01T00:00:00.200000+00:00")
+
     def test_retained_rejections_preserve_valid_clips_and_original_model_output(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -195,7 +212,8 @@ class GatheringTests(unittest.TestCase):
             self.assertEqual(manifest["rejected_segments"][1]["model_start_seconds"], "nan")
             self.assertFalse(list((root / "result").glob("*.wav")))
 
-    def exercise_queue(self, fail_second=False, reject_second=False, no_speech_first=False):
+    def exercise_queue(self, fail_second=False, reject_second=False, no_speech_first=False,
+                       save_audio=True, save_transcript=True):
         # This fake isolates scheduling/recovery assertions; real GPU inference
         # is exercised separately with BY-V and the cached full MOSS model.
         class Session:
@@ -267,7 +285,8 @@ class GatheringTests(unittest.TestCase):
             (model / "manifest.json").write_text("{}")
             config = GatheringConfig(output_dir=str(root / "run"), model_dir=str(model),
                                      source_audio=str(source), replay_realtime=False,
-                                     live_audio_enabled=False)
+                                     live_audio_enabled=False, save_audio=save_audio,
+                                     save_transcript=save_transcript)
             Publisher.messages = []
             with (patch("speech_to_text_deploy.model.session.OpenVinoSession", Session),
                   patch("speech_to_text_deploy.pipeline.SileroVAD", VAD),
@@ -312,6 +331,14 @@ class GatheringTests(unittest.TestCase):
                     self.assertAlmostEqual(float(row["rtf"]), latency / float(row["audio_seconds"]))
                     self.assertAlmostEqual(latency, sum(float(row[key]) for key in (
                         "prepare_seconds", "queue_wait_seconds", "inference_seconds", "trim_and_store_seconds")))
+                if not save_audio:
+                    self.assertEqual(list((root / "run/recordings").iterdir()), [])
+                if not save_transcript:
+                    self.assertTrue(Publisher.messages)
+                    self.assertEqual(len(list((root / "run/results").glob("segment-*/*"))), 0)
+
+    def test_disabled_persistence_publishes_mqtt_and_removes_capture_spool(self):
+        self.exercise_queue(save_audio=False, save_transcript=False)
 
     def test_queue_latency_and_storage_timing(self):
         self.exercise_queue()

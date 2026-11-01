@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .data import MonitorStore
 from .live_audio import LiveAudioHub
 from .labels import LabelStore
+from .mqtt import LiveTranscriptHub, MqttTranscriptSubscriber
 from ..config import load_settings
 
 
@@ -81,6 +82,16 @@ class MonitorHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                 else:
                     self.stream_live_audio()
+            elif request.path == "/api/live-transcript/stream":
+                if head:
+                    self.send_common_headers(200, "text/event-stream; charset=utf-8", 0)
+                    self.end_headers()
+                else:
+                    self.stream_live_transcripts()
+            elif request.path == "/api/settings":
+                self.send_json({"save_audio": self.server.settings["save_audio"],
+                                "save_transcript": self.server.settings["save_transcript"],
+                                "mqtt_enabled": self.server.settings["mqtt_enabled"]}, head)
             elif request.path in ("/", "/app.js", "/styles.css"):
                 name = {"/": "index.html", "/app.js": "app.js", "/styles.css": "styles.css"}[request.path]
                 mime = {"index.html": "text/html", "app.js": "text/javascript", "styles.css": "text/css"}[name]
@@ -183,6 +194,26 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 sequence = chunk.sequence
 
+    def stream_live_transcripts(self):
+        sequence = self.server.live_transcripts.latest_sequence
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        while True:
+            events = self.server.live_transcripts.after(sequence, timeout=10.0)
+            if not events:
+                self.wfile.write(b": keep-alive\n\n")
+                self.wfile.flush()
+                continue
+            for event in events:
+                sequence = event["sequence"]
+                payload = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+                self.wfile.write(f"id: {sequence}\ndata: {payload}\n\n".encode("utf-8"))
+                self.wfile.flush()
+
     def range_error(self, size):
         self.send_common_headers(416, "text/plain", 0)
         self.send_header("Content-Range", f"bytes */{size}")
@@ -197,10 +228,12 @@ class MonitorServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, output_base):
+    def __init__(self, address, output_base, settings=None):
+        self.settings = settings or load_settings()
         self.store = MonitorStore(output_base)
         self.labels = LabelStore(self.store.root)
         self.live_audio = LiveAudioHub()
+        self.live_transcripts = LiveTranscriptHub()
         super().__init__(address, MonitorHandler)
 
 
@@ -210,14 +243,27 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=18000)
     parser.add_argument("--output-base", type=Path)
     args = parser.parse_args(argv)
-    output_base = args.output_base or Path(load_settings()["output_base"])
-    with MonitorServer((args.host, args.port), output_base) as server:
-        print(f"MOSS monitor: http://{args.host}:{server.server_port}/", flush=True)
-        print("Output directory:", server.store.root, flush=True)
-        try:
-            server.serve_forever(poll_interval=0.5)
-        except KeyboardInterrupt:
-            pass
+    settings = load_settings()
+    output_base = args.output_base or Path(settings["output_base"])
+    subscriber = None
+    try:
+        with MonitorServer((args.host, args.port), output_base, settings=settings) as server:
+            if settings["mqtt_enabled"] and not settings["save_transcript"]:
+                subscriber = MqttTranscriptSubscriber(
+                    hub=server.live_transcripts, host=settings["mqtt_host"],
+                    port=settings["mqtt_port"], topic=settings["mqtt_topic"],
+                    qos=settings["mqtt_qos"],
+                    keepalive_seconds=settings["mqtt_keepalive_seconds"])
+                subscriber.start()
+            print(f"MOSS monitor: http://{args.host}:{server.server_port}/", flush=True)
+            print("Output directory:", server.store.root, flush=True)
+            try:
+                server.serve_forever(poll_interval=0.5)
+            except KeyboardInterrupt:
+                pass
+    finally:
+        if subscriber is not None:
+            subscriber.close()
 
 
 if __name__ == "__main__":

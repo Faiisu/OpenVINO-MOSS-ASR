@@ -40,6 +40,7 @@ The main controls in `settings.json` are grouped by purpose here:
 | Audio | `input_device`, `samplerate`, `input_latency_seconds`, `segment_seconds`, `max_audio_seconds`, `source_audio`, `replay_realtime` |
 | MQTT | `mqtt_enabled`, `mqtt_host`, `mqtt_port`, `mqtt_topic`, `mqtt_qos` and connection/publish timeouts |
 | Audio clips | `greeting_preroll_keyword`, `greeting_preroll_seconds` |
+| Storage and live output | `save_audio`, `save_transcript`, `mqtt_enabled`, `mqtt_host`, `mqtt_port`, `mqtt_topic`, `mqtt_qos` |
 | Time and runtime | `internet_time_timeout_seconds`, `live_audio_enabled`, `live_audio_url`, worker/drain timeouts, `min_free_bytes`, `output_base` |
 
 ## Structure
@@ -195,7 +196,8 @@ Set `max_audio_seconds` to `null` in settings to record until stopped, subject t
 `continuous_worker_timeout_seconds`. Press Ctrl+C once or create an empty
 `STOP` file inside the printed run directory. Capture stops and its last partial
 window is queued; inference then drains the queue within the drain deadline.
-The supervisor terminates a stuck worker. Raw recordings remain recoverable.
+The supervisor terminates a stuck worker. Raw recordings remain recoverable when
+`save_audio` is enabled; otherwise temporary inputs are removed after processing.
 
 ## MQTT transcript reports
 
@@ -232,6 +234,21 @@ to the local monitor while recording continues. Open the frontend and press
 This stream is independent of ASR inference and does not save another audio copy.
 If the monitor is unavailable, ASR capture continues and the forwarder retries.
 
+`save_audio` and `save_transcript` independently control persistent collection
+artifacts and default to `true`. With `save_audio` false, capture windows are
+spooled to a temporary directory only while inference needs them, then removed;
+utterance WAVs and the HTTP live-audio preview are disabled. With
+`save_transcript` false, transcript files and per-utterance metadata are not
+written. MQTT must remain enabled when either persistence option is false.
+MQTT reports contain transcript text and UTC start/end times (not audio bytes).
+
+When `save_transcript` is false, the frontend subscribes to the configured MQTT
+topic and displays incoming transcripts in memory only. It does not load the
+saved-run history in this mode, and refreshing the page clears the display; only
+messages received after the new page connection appears are shown. The server's
+existing run metrics may still be retained on disk, but the live-only view does
+not read or display that transcript/audio history.
+
 The live publish endpoint accepts only loopback requests. The browser stream is
 available to anyone who can reach the monitor on port 18000, so an active listener
 can hear the microphone audio in real time.
@@ -249,6 +266,40 @@ The model script runs continuously until interrupted. The frontend script serves
 the dashboard on port 18000 for reachable IPv4 clients. Press `Ctrl+C` in each
 terminal to stop its process. The scripts locate the project root themselves and
 use only the project `.venv` through `uv`.
+
+### Run the model pipeline and frontend with systemd
+
+On Linux systems that use systemd, install both services to start them at boot
+and restart them if either process exits:
+
+```bash
+sudo ./speech_to_text_deploy/systemctl_deploy.sh install
+```
+
+The installer creates `moss-model.service` and `moss-frontend.service` under
+`/etc/systemd/system`. The services run as the invoking user (`SUDO_USER`),
+using the project's `.venv`, OpenVINO model export and the existing run scripts.
+The model service receives the `audio` and `render` groups when those groups are
+available on the host. Set `MOSS_SERVICE_USER` before the command to select a
+different account.
+
+Manage both services together with the same script:
+
+```bash
+sudo ./speech_to_text_deploy/systemctl_deploy.sh status
+sudo ./speech_to_text_deploy/systemctl_deploy.sh restart
+sudo ./speech_to_text_deploy/systemctl_deploy.sh logs
+sudo ./speech_to_text_deploy/systemctl_deploy.sh stop
+sudo ./speech_to_text_deploy/systemctl_deploy.sh uninstall
+```
+
+`install` enables both units for system boot. After editing `settings.json`,
+restart both services so the collector and monitor load the updated settings.
+A software service cannot run
+while the machine has no power; to have the computer boot when power returns,
+enable the firmware's **Restore on AC Power Loss** option. The frontend listens
+on port 18000 without authentication by default, so restrict network access with
+a firewall or VPN when it should not be reachable by everyone on the network.
 
 Run the monitor independently of the collector, from the project root:
 

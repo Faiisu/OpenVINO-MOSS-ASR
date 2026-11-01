@@ -17,13 +17,17 @@ def validate_segments(segments):
 
 def export_timed_clips(audio_path, output_dir, raw, segments, capture, *,
                        invalid_segment_policy="raise", vad=None,
-                       greeting_preroll_keyword=None, greeting_preroll_seconds=0.0):
+                       greeting_preroll_keyword=None, greeting_preroll_seconds=0.0,
+                       save_audio=True, save_transcript=True, return_manifest=False):
     """Store each utterance WAV beside its text and local/recording/UTC times.
 
     Preserve overlapping utterances independently. Speaker labels apply only to
     this input window. Empty model output is retained explicitly without clips.
     The gathering workflow can retain invalid model intervals as rejected records
     while exporting valid clips. File/storage errors always propagate.
+    Set save flags independently to retain only audio or transcript artifacts.
+    ``return_manifest`` exposes in-memory metadata for MQTT when transcripts
+    must not be written to disk.
     """
     if invalid_segment_policy not in {"raise", "retain"}:
         raise ValueError("Invalid-segment policy must be 'raise' or 'retain'.")
@@ -31,8 +35,11 @@ def export_timed_clips(audio_path, output_dir, raw, segments, capture, *,
         raise ValueError("Greeting pre-roll keyword must be a string or None.")
     if not math.isfinite(greeting_preroll_seconds) or greeting_preroll_seconds < 0:
         raise ValueError("Greeting pre-roll duration must be finite and nonnegative.")
+    if not isinstance(save_audio, bool) or not isinstance(save_transcript, bool):
+        raise ValueError("Audio and transcript save settings must be booleans.")
     output_dir.mkdir(parents=True, exist_ok=False)
-    (output_dir / "raw_transcript.txt").write_text(raw, encoding="utf-8")
+    if save_transcript:
+        (output_dir / "raw_transcript.txt").write_text(raw, encoding="utf-8")
     entries, rejected = [], []
     capture_start = datetime.fromisoformat(capture["capture_start_utc"])
     with open_audio_source(audio_path) as source:
@@ -62,8 +69,9 @@ def export_timed_clips(audio_path, output_dir, raw, segments, capture, *,
             ranges.append((index, segment, start, end))
         for index, segment, start, end in ranges:
             name = f"utterance-{index:04d}"
-            with open_audio_target(output_dir / f"{name}.wav", source) as target:
-                copy_audio_frames(source, target, start, end - start)
+            if save_audio:
+                with open_audio_target(output_dir / f"{name}.wav", source) as target:
+                    copy_audio_frames(source, target, start, end - start)
             entry = {
                 "audio_file": f"{name}.wav", "text": segment.text,
                 "model_segment_index": index,
@@ -81,8 +89,9 @@ def export_timed_clips(audio_path, output_dir, raw, segments, capture, *,
                 "sample_rate": rate, "channels": source.channels, "subtype": source.subtype,
                 "frames": end - start,
             }
-            (output_dir / f"{name}.json").write_text(
-                json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
+            if save_transcript:
+                (output_dir / f"{name}.json").write_text(
+                    json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
             entries.append(entry)
     # The manifest is the completion marker; partial exports have no manifest.
     payload = {
@@ -98,10 +107,13 @@ def export_timed_clips(audio_path, output_dir, raw, segments, capture, *,
     }
     if vad is not None:
         payload["vad"] = vad
-    (output_dir / "transcript.txt").write_text(
-        "\n".join(f"[{entry['model_start_seconds']:.2f}-{entry['model_end_seconds']:.2f}] "
-                  f"{entry['speaker']}: {entry['text']}" for entry in entries),
-        encoding="utf-8")
-    (output_dir / "transcript.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if save_transcript:
+        (output_dir / "transcript.txt").write_text(
+            "\n".join(f"[{entry['model_start_seconds']:.2f}-{entry['model_end_seconds']:.2f}] "
+                      f"{entry['speaker']}: {entry['text']}" for entry in entries),
+            encoding="utf-8")
+        (output_dir / "transcript.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if return_manifest:
+        return len(entries), payload
     return len(entries)

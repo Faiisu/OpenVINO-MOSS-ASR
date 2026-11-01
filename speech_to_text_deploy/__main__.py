@@ -71,8 +71,10 @@ def main(argv=None, *, continuous_default=False):
             if continuous:
                 print("Reports:", run_dir / "reports", flush=True)
                 print("Create HTML summary: python -m speech_to_text_deploy summary", run_dir, flush=True)
-            else:
+            elif config.save_transcript:
                 print("Summary:", save_gathering_summary(run_dir), flush=True)
+            else:
+                print("Summary skipped because save_transcript is disabled.", flush=True)
 
 
 if __name__ == "__main__":

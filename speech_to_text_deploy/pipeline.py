@@ -40,8 +40,9 @@ def _write_progress(path, row):
 def run_gathering(config, *, stop_event=None):
     """Run two logical workers, drain captured files on stop, and always unload.
 
-    The queue holds paths, not audio arrays. Raw windows remain on disk even if
-    processing fails. A STOP file in the run folder requests stop and drain.
+    The queue holds paths, not audio arrays. Raw windows remain on disk when
+    audio persistence is enabled; otherwise they use a temporary spool. A STOP
+    file in the run folder requests stop and drain.
     RTF starts when each window is complete, excluding its acquisition time and
     initial model compilation; it includes spool finalization, queue wait,
     inference, trimming and local result storage.
@@ -55,6 +56,8 @@ def run_gathering(config, *, stop_event=None):
     recordings, results, reports = (root / name for name in ("recordings", "results", "reports"))
     for folder in (recordings, results, reports):
         folder.mkdir()
+    audio_spool = tempfile.TemporaryDirectory(prefix="moss-audio-") if not config.save_audio else None
+    capture_folder = Path(audio_spool.name) if audio_spool is not None else recordings
     (root / "config.json").write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
     progress_path = reports / "processing.json"
     stop = stop_event if stop_event is not None else threading.Event()
@@ -82,22 +85,24 @@ def run_gathering(config, *, stop_event=None):
             while not ready.wait(0.1):
                 if consumer_done.is_set() or stop.is_set():
                     return
-            with LiveAudioForwarder(enabled=config.live_audio_enabled,
+            with LiveAudioForwarder(enabled=config.live_audio_enabled and config.save_audio,
                                     publish_url=config.live_audio_url) as audio_forwarder:
                 for item in capture_segments(
-                        recordings, stop, segment_seconds=config.segment_seconds,
+                        capture_folder, stop, segment_seconds=config.segment_seconds,
                         samplerate=config.samplerate, input_device=config.input_device,
                         input_latency_seconds=config.input_latency_seconds,
                         internet_time_timeout_seconds=config.internet_time_timeout_seconds,
                         max_audio_seconds=config.max_audio_seconds, source_audio=config.source_audio,
                         replay_realtime=config.replay_realtime, min_free_bytes=config.min_free_bytes,
-                        on_audio_chunk=audio_forwarder.submit):
+                        on_audio_chunk=audio_forwarder.submit,
+                        save_metadata=config.save_audio):
                     item.queued_at = perf_counter()
                     if "timestamp_source" not in runtime:
                         runtime["timestamp_source"] = item.timestamp_source
                         print(f"Timestamp reference: {item.timestamp_source}", flush=True)
-                    item.path.with_suffix(".json").write_text(
-                        json.dumps(item.metadata(), indent=2), encoding="utf-8")
+                    if config.save_audio:
+                        item.path.with_suffix(".json").write_text(
+                            json.dumps(item.metadata(), indent=2), encoding="utf-8")
                     pending.put(item)
                     print(f"Captured segment {item.index}: {item.duration_seconds:.3f}s; "
                           f"queued={pending.qsize()}", flush=True)
@@ -176,11 +181,14 @@ def run_gathering(config, *, stop_event=None):
                             else:
                                 raw, segments = "", []
                             inferred = perf_counter()
-                            clip_count = export_timed_clips(
+                            clip_count, manifest = export_timed_clips(
                                 item.path, Path(row["output_dir"]), raw, segments, item.metadata(),
                                 invalid_segment_policy="retain",
                                 greeting_preroll_keyword=config.greeting_preroll_keyword,
                                 greeting_preroll_seconds=config.greeting_preroll_seconds,
+                                save_audio=config.save_audio,
+                                save_transcript=config.save_transcript,
+                                return_manifest=True,
                                 vad={"engine": "Silero VAD", "threshold": config.vad_threshold,
                                      "min_speech_duration_ms": config.vad_min_speech_duration_ms,
                                      "min_silence_duration_ms": config.vad_min_silence_duration_ms,
@@ -188,7 +196,6 @@ def run_gathering(config, *, stop_event=None):
                                      "speech_regions": [{"start_seconds": start, "end_seconds": end}
                                                         for start, end in speech_regions],
                                      "speech_seconds": speech_seconds})
-                            manifest = json.loads((Path(row["output_dir"]) / "transcript.json").read_text())
                             rejected_count = len(manifest["rejected_segments"])
                             completed = perf_counter()
                             allocated, reserved = tensor_memory(session.device)
@@ -225,6 +232,9 @@ def run_gathering(config, *, stop_event=None):
                             raise
                         finally:
                             progress_path.unlink(missing_ok=True)
+                            if not config.save_audio:
+                                item.path.unlink(missing_ok=True)
+                                item.path.with_suffix(".json").unlink(missing_ok=True)
                             pending.task_done()
             except BaseException as error:
                 fail("inference", error)
@@ -267,16 +277,23 @@ def run_gathering(config, *, stop_event=None):
             while not pending.empty():
                 item = pending.get_nowait()
                 row = base_row(item)
-                row.update(status="not_processed", error="Consumer stopped; original audio is retained.")
+                row.update(status="not_processed", error=(
+                    "Consumer stopped; original audio is retained." if config.save_audio else
+                    "Consumer stopped; temporary input audio was removed."))
                 report(row)
+                if not config.save_audio:
+                    item.path.unlink(missing_ok=True)
+                    item.path.with_suffix(".json").unlink(missing_ok=True)
                 pending.task_done()
             runtime.update(status="failed" if errors else (
                                "success_with_warnings" if counts["partial_count"] else "success"),
                            errors=errors, **counts,
                            workflow_seconds=perf_counter() - started)
             (reports / "runtime.json").write_text(json.dumps(runtime, indent=2), encoding="utf-8")
+    if audio_spool is not None:
+        audio_spool.cleanup()
     if errors:
-        raise RuntimeError(f"Collection failed; inspect {reports / 'runtime.json'} and retained recordings: {errors}")
+        raise RuntimeError(f"Collection failed; inspect {reports / 'runtime.json'}: {errors}")
     return runtime
 
 

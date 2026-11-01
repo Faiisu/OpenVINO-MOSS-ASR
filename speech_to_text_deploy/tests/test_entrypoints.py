@@ -59,6 +59,8 @@ class EntrypointTests(unittest.TestCase):
             self.assertEqual(values["mqtt_host"], "127.0.0.1")
             self.assertEqual(values["mqtt_port"], 1883)
             self.assertEqual(values["mqtt_topic"], "ASR/v1/report")
+            self.assertTrue(values["save_audio"])
+            self.assertTrue(values["save_transcript"])
 
     def test_all_deployment_modules_import_with_original_package_blocked(self):
         code = '''

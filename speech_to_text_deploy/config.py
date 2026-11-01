@@ -49,6 +49,8 @@ class GatheringConfig:
     source_audio: str | None = None
     replay_realtime: bool = True
     min_free_bytes: int = 256 * 1024**2
+    save_audio: bool = True
+    save_transcript: bool = True
     mqtt_enabled: bool = True
     mqtt_host: str = "127.0.0.1"
     mqtt_port: int = 1883
@@ -90,6 +92,10 @@ class GatheringConfig:
             raise ValueError("Hotwords must be nonempty strings.")
         if not isinstance(self.mqtt_enabled, bool):
             raise ValueError("MQTT enabled must be a boolean.")
+        if not isinstance(self.save_audio, bool) or not isinstance(self.save_transcript, bool):
+            raise ValueError("Audio and transcript save settings must be booleans.")
+        if not self.mqtt_enabled and (not self.save_audio or not self.save_transcript):
+            raise ValueError("Enable MQTT when audio or transcript persistence is disabled.")
         if not self.mqtt_host.strip() or not self.mqtt_topic.strip():
             raise ValueError("MQTT host and topic must be nonempty.")
         if not 1 <= self.mqtt_port <= 65535:
@@ -129,6 +135,8 @@ def load_settings(path=None):
     values.setdefault("continuous_worker_timeout_seconds", None)
     values.setdefault("drain_timeout_seconds", 600)
     values.setdefault("mqtt_enabled", True)
+    values.setdefault("save_audio", True)
+    values.setdefault("save_transcript", True)
     values.setdefault("mqtt_host", "127.0.0.1")
     values.setdefault("mqtt_port", 1883)
     values.setdefault("mqtt_topic", "ASR/v1/report")
