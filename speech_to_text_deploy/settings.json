@@ -1,0 +1,17 @@
+{
+  "model_dir": ".tools/moss-openvino-fp16",
+  "model_id": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+  "ov_device": "GPU",
+  "input_device": null,
+  "samplerate": 48000,
+  "input_latency_seconds": 1.0,
+  "segment_seconds": 30,
+  "max_audio_seconds": 120,
+  "max_new_tokens": 1024,
+  "languages": ["Thai", "English"],
+  "cpu_threads": 1,
+  "source_audio": null,
+  "replay_realtime": true,
+  "min_free_bytes": 268435456,
+  "output_base": "research_output_gathering/output"
+}

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+outputs/
+!/speech_to_text_deploy/outputs/
+!/speech_to_text_deploy/outputs/*.py
+/research_output_gathering/output/
+.tools/
+.uv-cache/
+.ipynb_checkpoints/
+upload-*/

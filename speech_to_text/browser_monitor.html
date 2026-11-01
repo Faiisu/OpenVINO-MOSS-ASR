@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remote microphone</title>
+<style>
+  body { font: 17px system-ui; max-width: 680px; margin: 60px auto; padding: 20px; }
+  button { font: inherit; padding: 10px 20px; margin-right: 12px; }
+  label { display: block; margin: 24px 0; }
+  #status { white-space: pre-wrap; }
+</style>
+<h1>Remote microphone</h1>
+<p>Listen to the remote BY-V microphone on this computer. Use headphones and start at low volume.</p>
+<button id="play">Play</button><button id="stop" disabled>Stop</button>
+<label>Volume <input id="volume" type="range" min="0" max="1" step="0.05" value="0.1"></label>
+<p id="status">Click Play to connect. Audio is not recorded.</p>
+<script>
+const play = document.querySelector('#play');
+const stop = document.querySelector('#stop');
+const volume = document.querySelector('#volume');
+const status = document.querySelector('#status');
+let context, controller, gain;
+
+async function stopAudio(message = 'Stopped.') {
+  controller?.abort();
+  controller = undefined;
+  const previousContext = context;
+  context = undefined;
+  gain = undefined;
+  if (previousContext) await previousContext.close();
+  play.disabled = false;
+  stop.disabled = true;
+  status.textContent = message;
+}
+
+play.onclick = async () => {
+  play.disabled = true;
+  stop.disabled = false;
+  const session = new AbortController();
+  controller = session;
+  try {
+    const audio = new AudioContext();
+    context = audio;
+    await audio.resume();
+    gain = audio.createGain();
+    gain.gain.value = Number(volume.value);
+    gain.connect(audio.destination);
+    const url = new URL('audio', location.href);
+    url.search = location.search;
+    const response = await fetch(url, {signal: session.signal, cache: 'no-store'});
+    if (!response.ok) throw new Error(`Stream failed (HTTP ${response.status}). Check the notebook or other listeners.`);
+    const rate = Number(response.headers.get('X-Sample-Rate'));
+    const reader = response.body.getReader();
+    let nextTime = audio.currentTime + 0.1;
+    let pending = new Uint8Array(0);
+    status.textContent = `Playing remote microphone at ${rate} Hz on this computer.`;
+    while (!session.signal.aborted) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      const bytes = new Uint8Array(pending.length + value.length);
+      bytes.set(pending);
+      bytes.set(value, pending.length);
+      const count = Math.floor(bytes.length / 2);
+      pending = bytes.slice(count * 2);
+      if (!count) continue;
+      const buffer = audio.createBuffer(1, count, rate);
+      const samples = buffer.getChannelData(0);
+      const view = new DataView(bytes.buffer);
+      for (let i = 0; i < count; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
+      if (nextTime < audio.currentTime || nextTime > audio.currentTime + 0.5)
+        nextTime = audio.currentTime + 0.05;
+      const source = audio.createBufferSource();
+      source.buffer = buffer;
+      source.connect(gain);
+      source.onended = () => source.disconnect();
+      source.start(nextTime);
+      nextTime += buffer.duration;
+    }
+    if (controller === session) await stopAudio('Stream ended. Restart the notebook server if needed.');
+  } catch (error) {
+    if (controller === session) await stopAudio(error.name === 'AbortError' ? 'Stopped.' : error.message);
+  }
+};
+stop.onclick = () => stopAudio();
+volume.oninput = () => { if (gain) gain.gain.value = Number(volume.value); };
+addEventListener('pagehide', () => { controller?.abort(); context?.close(); });
+</script>
+</html>
