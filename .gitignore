@@ -5,6 +5,9 @@ outputs/
 !/speech_to_text_deploy/outputs/
 !/speech_to_text_deploy/outputs/*.py
 /research_output_gathering/output/
+/labelled_dataset/
+/speech_to_text_deploy/labelled_dataset/**
+!/speech_to_text_deploy/labelled_dataset/README.md
 .tools/
 .uv-cache/
 .ipynb_checkpoints/
