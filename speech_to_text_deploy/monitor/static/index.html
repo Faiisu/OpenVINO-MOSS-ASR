@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#11161d">
+  <title>MOSS · Live speech monitor</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="MOSS monitor home">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 13v6m6-11v16m5-20v24m5-20v16m6-11v6" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+      <span>MOSS<span class="brand-sub"> / LIVE</span></span>
+    </a>
+    <div class="top-right"><span class="view-only">LABEL REVIEW</span><span id="connection" class="connection"><i></i>Connecting</span></div>
+  </header>
+  <main>
+    <section class="page-heading">
+      <div><div class="eyebrow">SPEECH INTELLIGENCE</div><h1>Listen. Transcribe. Observe.</h1><p>Live output from your speech collection pipeline.</p></div>
+      <button id="pause" class="button secondary" aria-pressed="false">Pause updates</button>
+    </section>
+    <section class="run-toolbar" aria-label="Run selection">
+      <div class="run-select"><label for="run">COLLECTION RUN</label><select id="run"><option value="">Waiting for a run…</option></select></div>
+      <label class="follow"><input id="follow" type="checkbox" checked> Follow newest run</label>
+      <div class="refresh-note"><span class="pulse"></span>Auto-refresh · 1 s</div>
+    </section>
+    <section class="live-audio-panel panel" aria-label="Live audio listener">
+      <div><h2>Live audio</h2><p>Listen to the capture while the ASR flow is running.</p><span id="live-audio-status" class="quiet">Not connected</span></div>
+      <div class="live-audio-controls"><button id="live-audio-toggle" class="button secondary" type="button">Listen live</button><label for="live-audio-volume">Volume <input id="live-audio-volume" type="range" min="0" max="1" step="0.05" value="0.8"></label></div>
+    </section>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <section class="metrics" aria-label="Run metrics">
+      <article class="metric"><span class="metric-label">AUDIO PROCESSED</span><div id="metric-audio" class="metric-value">—</div><span id="metric-windows" class="metric-detail">Waiting for completed windows</span></article>
+      <article class="metric"><span class="metric-label">SAVED UTTERANCES</span><div id="metric-clips" class="metric-value">—</div><span id="metric-rejected" class="metric-detail">Timestamp-aligned audio clips</span></article>
+      <article class="metric"><span class="metric-label">AWAITING RESULTS</span><div id="metric-pending" class="metric-value">—</div><span id="metric-captured" class="metric-detail">Captured audio windows</span></article>
+      <article class="metric accent"><span class="metric-label">DURATION-WEIGHTED RTF</span><div id="metric-rtf" class="metric-value">—</div><span class="metric-detail">Includes queue wait · lower is faster</span></article>
+    </section>
+    <div class="workspace">
+      <section class="transcript-panel panel">
+        <div class="panel-heading"><div><h2>Live transcript <span id="status" class="badge">Waiting</span></h2><p>Speech, speakers, and the audio behind every line.</p></div><span id="visible-count" class="quiet"></span></div>
+        <div class="search-row"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search visible transcript or speaker…" aria-label="Search visible transcript or speaker"><kbd>/</kbd></div>
+        <section class="dataset-toolbar" aria-label="Fine-tuning dataset export">
+          <div><strong>Build a MOSS fine-tuning dataset</strong><p>Edit transcript/speaker, select clips, then save each label. Export appends new selections and skips source utterances or identical audio already in the dataset.</p></div>
+          <button id="export-dataset" class="button" type="button">Export selected dataset</button>
+          <span id="dataset-status" class="dataset-status" role="status">Labels are stored with their source run until exported.</span>
+        </section>
+        <div id="windows" class="windows"><div class="empty"><span class="empty-symbol">≋</span><h3>Waiting for speech</h3><p>Your collection run will appear here automatically.</p></div></div>
+        <div id="no-matches" class="empty" hidden><h3>No matching utterances</h3><p>Try a different word or speaker label.</p></div>
+        <div class="history-actions"><button id="older" class="button secondary" disabled>Load older windows</button><button id="live" class="button" hidden>Back to live</button></div>
+        <div class="panel-footnote">Results arrive after each audio window is processed. Speaker IDs are local to each window. The exported JSONL transcript uses clip-relative timestamps, a MOSS speaker token, and the reviewed text.</div>
+      </section>
+      <aside>
+        <section class="panel trend-panel">
+          <div class="panel-heading"><div><h2>Processing pulse</h2><p>RTF across recent windows</p></div><span class="tiny-label">RTF</span></div>
+          <div id="chart" class="chart"><span class="quiet">Waiting for timing data</span></div>
+          <div class="chart-key"><span><i class="mint-dot"></i>Window RTF</span><span>1.0 = audio duration</span></div>
+        </section>
+        <section class="panel timing-panel">
+          <div class="panel-heading"><div><h2>Window breakdown</h2><p>Time from queue to saved output</p></div></div>
+          <div class="legend"><span><i class="legend-infer"></i>Inference</span><span><i class="legend-queue"></i>Queue</span><span><i class="legend-store"></i>Store</span></div>
+          <div id="timings" class="timings"><p class="quiet">No completed windows yet.</p></div>
+        </section>
+        <section class="panel session-panel"><div class="panel-heading"><h2>Session details</h2><span class="device" id="device">GPU</span></div>
+          <dl><div><dt>Source</dt><dd id="source">—</dd></div><div><dt>Audio window</dt><dd id="window-size">—</dd></div><div><dt>Currently recording</dt><dd id="current-window">—</dd></div><div><dt>Last file activity</dt><dd id="last-activity">—</dd></div></dl>
+          <div class="session-note">The monitor reads saved output and writes only label records and explicitly exported dataset files. Collection keeps running independently.</div>
+        </section>
+      </aside>
+    </div>
+    <footer><span>MOSS TRANSCRIBE / DIARIZE</span><span id="updated">Connecting to collection output…</span></footer>
+  </main>
+</body>
+</html>

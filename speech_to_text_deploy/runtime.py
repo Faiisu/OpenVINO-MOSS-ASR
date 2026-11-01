@@ -1,5 +1,6 @@
 """Worker supervision, environment setup and shared model-memory cleanup."""
 import gc
+import json
 import math
 import os
 from pathlib import Path
@@ -8,6 +9,34 @@ import subprocess
 import sys
 from time import monotonic
 import traceback
+
+
+class SectionTimeoutError(TimeoutError):
+    """Raised when a single inference section exceeds its processing deadline."""
+
+    def __init__(self, section_index, elapsed_seconds, timeout_seconds):
+        self.section_index = section_index
+        self.elapsed_seconds = elapsed_seconds
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"Section {section_index} exceeded its {timeout_seconds:.1f}s processing timeout "
+            f"after {elapsed_seconds:.1f}s."
+        )
+
+
+def _check_section_timeout(progress_file, timeout_seconds):
+    """Read the active section's atomic heartbeat and enforce its deadline."""
+    if progress_file is None or timeout_seconds is None:
+        return
+    try:
+        progress = json.loads(progress_file.read_text(encoding="utf-8"))
+        started_at = float(progress["started_at_monotonic"])
+        section_index = int(progress["segment_index"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return
+    elapsed = monotonic() - started_at
+    if elapsed > timeout_seconds:
+        raise SectionTimeoutError(section_index, elapsed, timeout_seconds)
 
 
 def tensor_memory(device):
@@ -23,17 +52,24 @@ def tensor_memory(device):
 
 
 def run_model_worker(command, *, env, cwd=None, timeout_seconds=600,
-                     min_available_memory_bytes=1024**3, interrupt_grace_seconds=5):
-    """Supervise a worker; None disables its deadline but keeps resource checks."""
+                     min_available_memory_bytes=1024**3, interrupt_grace_seconds=5,
+                     section_progress_file=None, section_timeout_seconds=None):
+    """Supervise overall and active-section deadlines; None disables the overall deadline."""
     if ((timeout_seconds is not None and (not math.isfinite(timeout_seconds) or timeout_seconds <= 0))
-            or min_available_memory_bytes < 0 or interrupt_grace_seconds <= 0):
+            or min_available_memory_bytes < 0 or interrupt_grace_seconds <= 0
+            or (section_timeout_seconds is not None
+                and (not math.isfinite(section_timeout_seconds) or section_timeout_seconds <= 0))
+            or ((section_progress_file is None) != (section_timeout_seconds is None))):
         raise ValueError("Worker timeout must be positive and memory reserve nonnegative.")
+    section_progress_file = (Path(section_progress_file)
+                             if section_progress_file is not None else None)
     process = subprocess.Popen(command, env=env, cwd=cwd, start_new_session=True)
     started = monotonic()
     try:
         while process.poll() is None:
             if timeout_seconds is not None and monotonic() - started >= timeout_seconds:
                 raise TimeoutError(f"Model worker exceeded {timeout_seconds}s; stopped before the next trial.")
+            _check_section_timeout(section_progress_file, section_timeout_seconds)
             if min_available_memory_bytes and Path("/proc/meminfo").exists():
                 values = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
                 available = int(values["MemAvailable"].split()[0]) * 1024
@@ -51,7 +87,10 @@ def run_model_worker(command, *, env, cwd=None, timeout_seconds=600,
             # Give adapter finally blocks a chance to release tensors first.
             try:
                 os.killpg(process.pid, signal.SIGINT)
-                process.wait(timeout=interrupt_grace_seconds)
+                active_error = sys.exc_info()[1]
+                grace_seconds = (5 if isinstance(active_error, SectionTimeoutError)
+                                 else interrupt_grace_seconds)
+                process.wait(timeout=grace_seconds)
             except (subprocess.TimeoutExpired, KeyboardInterrupt):
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()

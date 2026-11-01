@@ -15,7 +15,9 @@ def validate_segments(segments):
             raise ValueError(f"Invalid MOSS segment: {segment}")
 
 
-def export_timed_clips(audio_path, output_dir, raw, segments, capture, *, invalid_segment_policy="raise"):
+def export_timed_clips(audio_path, output_dir, raw, segments, capture, *,
+                       invalid_segment_policy="raise", vad=None,
+                       greeting_preroll_keyword=None, greeting_preroll_seconds=0.0):
     """Store each utterance WAV beside its text and local/recording/UTC times.
 
     Preserve overlapping utterances independently. Speaker labels apply only to
@@ -25,6 +27,10 @@ def export_timed_clips(audio_path, output_dir, raw, segments, capture, *, invali
     """
     if invalid_segment_policy not in {"raise", "retain"}:
         raise ValueError("Invalid-segment policy must be 'raise' or 'retain'.")
+    if greeting_preroll_keyword is not None and not isinstance(greeting_preroll_keyword, str):
+        raise ValueError("Greeting pre-roll keyword must be a string or None.")
+    if not math.isfinite(greeting_preroll_seconds) or greeting_preroll_seconds < 0:
+        raise ValueError("Greeting pre-roll duration must be finite and nonnegative.")
     output_dir.mkdir(parents=True, exist_ok=False)
     (output_dir / "raw_transcript.txt").write_text(raw, encoding="utf-8")
     entries, rejected = [], []
@@ -36,7 +42,10 @@ def export_timed_clips(audio_path, output_dir, raw, segments, capture, *, invali
         for index, segment in enumerate(segments, 1):
             try:
                 validate_segments([segment])
-                start = math.floor(segment.start * rate)
+                pre_roll = (greeting_preroll_seconds
+                            if greeting_preroll_keyword
+                            and greeting_preroll_keyword in segment.text else 0.0)
+                start = max(0, math.floor((segment.start - pre_roll) * rate))
                 end = min(frames, math.ceil(segment.end * rate))
                 if start >= end:
                     raise ValueError("A model interval falls outside the captured audio.")
@@ -60,11 +69,15 @@ def export_timed_clips(audio_path, output_dir, raw, segments, capture, *, invali
                 "model_segment_index": index,
                 "speaker": segment.speaker,
                 "model_start_seconds": segment.start, "model_end_seconds": segment.end,
+                "model_start_utc": (capture_start + timedelta(seconds=segment.start)).isoformat(),
+                "model_end_utc": (capture_start + timedelta(seconds=segment.end)).isoformat(),
                 "start_seconds": start / rate, "end_seconds": end / rate,
+                "pre_roll_seconds": max(0.0, segment.start - start / rate),
                 "recording_start_seconds": capture["offset_seconds"] + start / rate,
                 "recording_end_seconds": capture["offset_seconds"] + end / rate,
                 "start_utc": (capture_start + timedelta(seconds=start / rate)).isoformat(),
                 "end_utc": (capture_start + timedelta(seconds=end / rate)).isoformat(),
+                "timestamp_source": capture.get("timestamp_source", "computer"),
                 "sample_rate": rate, "channels": source.channels, "subtype": source.subtype,
                 "frames": end - start,
             }
@@ -83,6 +96,8 @@ def export_timed_clips(audio_path, output_dir, raw, segments, capture, *, invali
         "segments": entries,
         "rejected_segments": rejected,
     }
+    if vad is not None:
+        payload["vad"] = vad
     (output_dir / "transcript.txt").write_text(
         "\n".join(f"[{entry['model_start_seconds']:.2f}-{entry['model_end_seconds']:.2f}] "
                   f"{entry['speaker']}: {entry['text']}" for entry in entries),

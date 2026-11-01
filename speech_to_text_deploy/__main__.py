@@ -22,11 +22,11 @@ def main(argv=None, *, continuous_default=False):
     run.add_argument("--source-audio", type=Path, help="Replay this file instead of recording live audio.")
     limit = run.add_mutually_exclusive_group()
     limit.add_argument("--duration", type=float, help="Override the maximum audio duration in seconds.")
-    limit.add_argument("--continuous", action="store_true", help="Capture until stopped, without a worker deadline.")
+    limit.add_argument("--continuous", action="store_true", help="Capture until stopped using the continuous timeout setting.")
     run.add_argument("--fast-replay", action="store_true", help="Replay without acquisition pacing.")
     run.add_argument("--output-dir", type=Path, help="Use this new run directory instead of an automatic name.")
-    run.add_argument("--timeout", type=float, help="Worker deadline; default 3600s, or no deadline in continuous mode.")
-    run.add_argument("--drain-timeout", type=float, default=600)
+    run.add_argument("--timeout", type=float, help="Override the configured worker deadline for this run.")
+    run.add_argument("--drain-timeout", type=float, help="Override the configured shutdown drain timeout.")
     summary = commands.add_parser("summary", help="Save a transcript/audio/RTF HTML report for a run.")
     summary.add_argument("run_dir", type=Path)
     args = parser.parse_args(argv)
@@ -36,7 +36,12 @@ def main(argv=None, *, continuous_default=False):
 
     values = load_settings(args.config)
     continuous = args.continuous or (continuous_default and args.duration is None)
-    timeout = args.timeout if args.timeout is not None else (None if continuous else 3600)
+    bounded_timeout = values.pop("bounded_worker_timeout_seconds")
+    continuous_timeout = values.pop("continuous_worker_timeout_seconds")
+    drain_timeout = values.pop("drain_timeout_seconds")
+    timeout_default = continuous_timeout if continuous else bounded_timeout
+    timeout = args.timeout if args.timeout is not None else timeout_default
+    drain_timeout = args.drain_timeout if args.drain_timeout is not None else drain_timeout
     output_base = Path(values.pop("output_base"))
     if args.source_audio is not None:
         values["source_audio"] = str(args.source_audio.resolve())
@@ -55,7 +60,7 @@ def main(argv=None, *, continuous_default=False):
     previous_sigterm = signal.signal(signal.SIGTERM, _request_stop)
     try:
         runtime = gather_isolated(config, timeout_seconds=timeout,
-                                  drain_timeout_seconds=args.drain_timeout)
+                                  drain_timeout_seconds=drain_timeout)
         print("Status:", runtime["status"], flush=True)
         print("Processed windows:", runtime["processed_count"], flush=True)
         print("Rejected model intervals:", runtime["rejected_segment_count"], flush=True)

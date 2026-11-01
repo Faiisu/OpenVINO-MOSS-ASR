@@ -1,8 +1,8 @@
 """Continuously collect BY-V audio, timestamped transcripts and RTF until stopped.
 
 Run with the project-local interpreter through uv. Settings come from the shared
-settings.json; continuous mode overrides its capture duration and worker deadline.
-Use --duration for a bounded run or --help to see the shared CLI options.
+settings.json; continuous mode captures until stopped and uses its configured
+worker deadline. Use --duration for a bounded run or --help for CLI options.
 """
 
 from pathlib import Path

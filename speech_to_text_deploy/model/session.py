@@ -105,7 +105,8 @@ class OpenVinoSession:
         history.append(metrics)
         del history[:-METRIC_HISTORY_LIMIT]
 
-    def transcribe_batch(self, audio_paths, max_new_tokens, languages=None, *, audio_duration_seconds=None):
+    def transcribe_batch(self, audio_paths, max_new_tokens, languages=None, *, hotwords=(),
+                         audio_duration_seconds=None):
         from moss_transcribe_diarize import parse_transcript
         from moss_transcribe_diarize.inference_utils import DEFAULT_PROMPT
         if not audio_paths or max_new_tokens < 1:
@@ -116,7 +117,8 @@ class OpenVinoSession:
         duration = audio_duration_seconds if audio_duration_seconds is not None else self.audio_window_seconds
         batch_metrics['timestamp_limit_seconds'] = duration
         try:
-            prompt = transcription_prompt(DEFAULT_PROMPT, languages, audio_duration_seconds=duration)
+            prompt = transcription_prompt(DEFAULT_PROMPT, languages, hotwords=hotwords,
+                                          audio_duration_seconds=duration)
             inputs = prepare_batch_inputs(self.processor, audio_paths, prompt)
             ids = inputs['input_ids'].numpy()
             mask = inputs['attention_mask'].numpy()
@@ -181,11 +183,12 @@ class OpenVinoSession:
                 self.decoder_request.reset_state()
             release_model_memory(self.device)
 
-    def transcribe(self, audio_path, max_new_tokens, languages=None):
+    def transcribe(self, audio_path, max_new_tokens, languages=None, hotwords=()):
         duration = None
         if self.audio_window_seconds is not None:
             from ..audio.io import open_audio_source
             with open_audio_source(audio_path) as source:
                 duration = min(self.audio_window_seconds, source.frames / source.samplerate)
-        results, _ = self.transcribe_batch([str(audio_path)], max_new_tokens, languages, audio_duration_seconds=duration)
+        results, _ = self.transcribe_batch([str(audio_path)], max_new_tokens, languages,
+                                           hotwords=hotwords, audio_duration_seconds=duration)
         return results[0]

@@ -1,10 +1,12 @@
-"""Edit language and timestamp instructions for deployed MOSS here."""
+"""Compose language, hotword and timestamp instructions for deployed MOSS."""
 import math
 
 
-def transcription_prompt(default_prompt, languages, *, audio_duration_seconds=None):
+def transcription_prompt(default_prompt, languages, *, hotwords=(), audio_duration_seconds=None):
     """Extend the upstream prompt consistently for single and batched generation."""
     prompt = default_prompt
+    if hotwords:
+        prompt += " Hotwords: " + ", ".join(hotwords) + "."
     if languages:
         prompt += (" The audio may contain the following languages: " + ", ".join(languages)
                    + ". Transcribe speech in its original language without translation."

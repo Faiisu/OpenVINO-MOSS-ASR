@@ -2,7 +2,7 @@
 
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import json
 import math
 from pathlib import Path
@@ -12,6 +12,7 @@ from time import perf_counter
 import soundfile as sf
 
 from .io import open_audio_source, open_audio_target
+from .clock import reference_clock
 
 
 @dataclass
@@ -22,6 +23,7 @@ class CapturedSegment:
     duration_seconds: float
     capture_start_utc: str
     capture_end_utc: str
+    timestamp_source: str
     ready_at: float
     queued_at: float = 0.0
 
@@ -47,8 +49,10 @@ def resolve_microphone(device=None):
 
 def capture_segments(folder, stop, *, segment_seconds=30, samplerate=48000,
                      input_device=None, input_latency_seconds=1.0,
+                     internet_time_timeout_seconds=1.0,
                      max_audio_seconds=None, source_audio=None,
-                     replay_realtime=True, min_free_bytes=256 * 1024**2):
+                     replay_realtime=True, min_free_bytes=256 * 1024**2,
+                     on_audio_chunk=None):
     """Yield closed WAVs; preserve a final partial segment on stop or file EOF.
 
     UTC times estimate capture from stream start; offsets are sample accurate.
@@ -62,6 +66,7 @@ def capture_segments(folder, stop, *, segment_seconds=30, samplerate=48000,
         raise ValueError("Segment length and optional capture duration must be positive.")
     if not math.isfinite(input_latency_seconds) or input_latency_seconds <= 0:
         raise ValueError("Input latency must be positive and finite.")
+    reference_utc, reference_monotonic, timestamp_source = reference_clock(internet_time_timeout_seconds)
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     with ExitStack() as stack:
@@ -89,7 +94,8 @@ def capture_segments(folder, stop, *, segment_seconds=30, samplerate=48000,
         if chunk_frames < 1:
             raise ValueError("Segment length is shorter than one audio frame.")
         limit = round(max_audio_seconds * rate) if max_audio_seconds is not None else None
-        origin_utc, origin_clock = datetime.now(timezone.utc), perf_counter()
+        origin_clock = perf_counter()
+        origin_utc = reference_utc + timedelta(seconds=origin_clock - reference_monotonic)
         total_frames, index = 0, 0
         eof = False
         while not stop.is_set() and not eof and (limit is None or total_frames < limit):
@@ -111,6 +117,8 @@ def capture_segments(folder, stop, *, segment_seconds=30, samplerate=48000,
                         eof = True
                         break
                     output.write(data)
+                    if on_audio_chunk is not None:
+                        on_audio_chunk(data, rate)
                     written += len(data)
                     total_frames += len(data)
                     if source_audio is not None and replay_realtime:
@@ -122,7 +130,8 @@ def capture_segments(folder, stop, *, segment_seconds=30, samplerate=48000,
             item = CapturedSegment(
                 index, path, first_frame / rate, written / rate,
                 (origin_utc + timedelta(seconds=first_frame / rate)).isoformat(),
-                (origin_utc + timedelta(seconds=total_frames / rate)).isoformat(), ready_at,
+                (origin_utc + timedelta(seconds=total_frames / rate)).isoformat(),
+                timestamp_source, ready_at,
             )
             path.with_suffix(".json").write_text(
                 json.dumps(item.metadata(), indent=2), encoding="utf-8")

@@ -60,7 +60,8 @@ def gathering_summary_html(run_dir):
         rtf = _number(row["rtf"]) if row["status"] in COMPLETED_STATUSES else "N/A"
         timing_rows.append([
             index, escape(row["status"]), _number(row["audio_seconds"]),
-            _number(row["queue_wait_seconds"]), _number(row["inference_seconds"]),
+            _number(row["queue_wait_seconds"]), _number(row.get("vad_speech_seconds")),
+            _number(row["inference_seconds"]),
             _number(row["trim_and_store_seconds"]), rtf, escape(row.get("rejected_count") or "0"),
         ])
         # Resolve against this run, so a copied run remains viewable even when
@@ -78,7 +79,14 @@ def gathering_summary_html(run_dir):
             continue
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if not manifest["segments"] and not manifest.get("rejected_segments"):
-            notes.append(f"<p>Window {index}: no parsed utterances ({escape(manifest['status'])}).</p>")
+            vad = manifest.get("vad", {})
+            if vad and not vad.get("speech_regions"):
+                notes.append(
+                    f"<p>Window {index}: skipped by VAD; no speech met threshold "
+                    f"{_number(vad.get('threshold'))} and minimum duration "
+                    f"{escape(str(vad.get('min_speech_duration_ms')))} ms.</p>")
+            else:
+                notes.append(f"<p>Window {index}: no parsed utterances ({escape(manifest['status'])}).</p>")
         for entry in manifest["segments"]:
             audio_path = folder / entry["audio_file"]
             if audio_path.is_file():
@@ -107,15 +115,16 @@ def gathering_summary_html(run_dir):
         f"<h3>Run summary</h3><p>{escape(str(root))}</p>"
         f"<p>Status: {escape(runtime.get('status', 'incomplete'))} | "
         f"Completed windows: {len(completed)}/{len(rows)} | Utterances: {len(transcript_rows)} | "
+        f"VAD-skipped windows: {sum(row['status'] == 'no_speech' for row in completed)} | "
         f"Rejected utterances: {rejected_count} | "
         f"Processed audio: {_number(audio_seconds)} s | Duration-weighted RTF: {_number(weighted_rtf)}</p>"
         "<p>RTF = window-ready-to-output latency / window audio duration. It includes "
         "preparation, queue wait, inference and local storage. Duration-weighted RTF = "
-        "sum(latency) / sum(audio duration) for completed windows (success or partial); "
+        "sum(latency) / sum(audio duration) for completed windows (success, partial or no speech); "
         "it is not wall-clock throughput. Partial means some model intervals were rejected. "
         "RTF is measured per window, not per utterance. Speaker IDs are independent per window.</p>"
     )
-    timing = _table(["Window", "Status", "Audio (s)", "Queue wait (s)", "Inference (s)",
+    timing = _table(["Window", "Status", "Audio (s)", "Queue wait (s)", "VAD speech (s)", "Inference (s)",
                      "Trim/store (s)", "RTF", "Rejected"], timing_rows)
     transcripts = (_table(["Window", "Speaker", "Recording time (s)", "Clip time in window (s)",
                            "Transcript", "Timestamped audio", "Window RTF"], transcript_rows)

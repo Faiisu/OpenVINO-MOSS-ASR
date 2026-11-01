@@ -44,12 +44,21 @@ class EntrypointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "settings.json"
             path.write_text(json.dumps({"model_dir": "models/moss", "source_audio": "audio/input.wav",
-                                        "output_base": "results", "max_audio_seconds": 31}))
+                                        "output_base": "results", "max_audio_seconds": 31,
+                                        "hotwords": ["Subway", "ซับเวย์"],
+                                        "vad_threshold": 0.9, "vad_min_speech_duration_ms": 1000,
+                                        "bounded_worker_timeout_seconds": 7200}))
             values = load_settings(path)
             self.assertEqual(values["model_dir"], str(ROOT / "models/moss"))
             self.assertEqual(values["source_audio"], str(ROOT / "audio/input.wav"))
             self.assertEqual(values["output_base"], str(ROOT / "results"))
             self.assertEqual(values["max_audio_seconds"], 31)
+            self.assertEqual(values["hotwords"], ("Subway", "ซับเวย์"))
+            self.assertEqual(values["vad_threshold"], 0.9)
+            self.assertEqual(values["bounded_worker_timeout_seconds"], 7200)
+            self.assertEqual(values["mqtt_host"], "127.0.0.1")
+            self.assertEqual(values["mqtt_port"], 1883)
+            self.assertEqual(values["mqtt_topic"], "ASR/v1/report")
 
     def test_all_deployment_modules_import_with_original_package_blocked(self):
         code = '''
@@ -82,9 +91,12 @@ assert not any(name == "speech_to_text" or name.startswith("speech_to_text.") fo
     def test_prompt_bounds_and_unique_run_names(self):
         self.assertEqual(transcription_prompt("Base.", None), "Base.")
         for duration in (30, 3.125):
-            prompt = transcription_prompt("Base.", ["Thai", "English"], audio_duration_seconds=duration)
+            prompt = transcription_prompt("Base.", ["Thai", "English"],
+                                          hotwords=["Subway", "ซัพเวย์", "ซับเวย์"],
+                                          audio_duration_seconds=duration)
             self.assertIn(f"0 <= start < end <= {duration} seconds", prompt)
             self.assertIn("Thai, English", prompt)
+            self.assertIn("Hotwords: Subway, ซัพเวย์, ซับเวย์.", prompt)
         for duration in (0, -1, float("nan"), float("inf")):
             with self.assertRaises(ValueError):
                 transcription_prompt("Base.", None, audio_duration_seconds=duration)
