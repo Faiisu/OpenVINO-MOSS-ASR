@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { run: null, paused: false, before: null, data: null, rendered: new Map(), runsKey: "" };
+const state = { run: null, paused: false, before: null, liveCursor: null, data: null, rendered: new Map(), runsKey: "", runGeneration: 0, loadingOlder: false };
 let mqttLiveOnly = false;
 let mqttTranscriptSource = null;
 const labels = { collecting: "Collecting", starting: "Starting", draining: "Draining", success: "Completed", success_with_warnings: "Completed with warnings", failed: "Failed", inactive: "Inactive", partial: "Partial", no_speech: "No speech", not_processed: "Not processed" };
@@ -112,6 +112,12 @@ function renderWindows(data) {
   applySearch();
 }
 
+function mergeWindows(existing, incoming) {
+  const byIndex = new Map(existing.map((win) => [win.index, win]));
+  incoming.forEach((win) => byIndex.set(win.index, win));
+  return [...byIndex.values()].sort((a, b) => b.index - a.index);
+}
+
 function applySearch() {
   const query = $("search").value.trim().toLocaleLowerCase(); let matches = 0;
   document.querySelectorAll(".window").forEach((card) => {
@@ -124,7 +130,7 @@ function applySearch() {
 }
 
 function renderChart(windows) {
-  const values = [...windows].reverse().filter((win) => win.rtf != null);
+  const values = [...windows].reverse().filter((win) => win.rtf != null).slice(-15);
   const target = $("chart"); target.replaceChildren();
   if (!values.length) { target.append(node("span", "quiet", "Waiting for timing data")); return; }
   const ns = "http://www.w3.org/2000/svg"; const svg = document.createElementNS(ns, "svg"); svg.setAttribute("viewBox", "0 0 280 110"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Recent window RTF trend");
@@ -160,8 +166,9 @@ function render(data) {
   const status = badge(data.status); status.id = "status"; $("status").replaceWith(status);
   text("visible-count", `${data.windows.length} windows`);
   renderWindows(data); renderChart(data.windows); renderTimings(data.windows);
-  $("older").disabled = !data.has_older; $("live").hidden = state.before == null;
-  notice(data.errors.length ? data.errors.map((error) => `${error.worker}: ${error.error}`).join(" · ") : (state.before != null ? "History view. Use Back to live to resume automatic updates." : ""));
+  $("older").disabled = !data.has_older || state.loadingOlder; $("live").hidden = state.before == null;
+  observeHistorySentinel();
+  notice(data.errors.length ? data.errors.map((error) => `${error.worker}: ${error.error}`).join(" · ") : (state.before != null ? "Older history is loaded. New windows continue to appear; Back to live scrolls to the newest." : ""));
 }
 
 const liveAudio = { source: null, context: null, gain: null, nextTime: 0 };
@@ -248,7 +255,7 @@ $("export-dataset").addEventListener("click", async () => {
   finally { button.disabled = false; }
 });
 
-function changeRun(id) { state.run = id; state.before = null; state.rendered.clear(); $("windows").replaceChildren(); }
+function changeRun(id) { state.run = id; state.runGeneration++; state.before = null; state.liveCursor = null; state.data = null; state.loadingOlder = false; state.rendered.clear(); $("windows").replaceChildren(); }
 function renderMqttTranscript(message) {
   const target = $("mqtt-live-events");
   if (target.firstElementChild?.classList.contains("empty")) target.replaceChildren();
@@ -303,20 +310,75 @@ async function refresh() {
     if (key !== state.runsKey) { state.runsKey = key; $("run").replaceChildren(); runs.forEach((run) => $("run").add(new Option(run.id, run.id))); if (!runs.length) $("run").add(new Option("Waiting for a run…", "")); }
     if (runs.length && (!state.run || ($("follow").checked && !state.paused && state.before == null))) { if (state.run !== runs[0].id) changeRun(runs[0].id); }
     if (state.run) $("run").value = state.run;
-    if (state.run && !state.paused && state.before == null) {
+    if (state.run && !state.paused) {
       const requestedRun = state.run;
+      const generation = state.runGeneration;
       const data = await fetchJSON(`/api/runs/${encodeURIComponent(requestedRun)}`);
-      if (state.run === requestedRun && !state.paused && state.before == null) render(data);
+      if (state.run === requestedRun && state.runGeneration === generation && !state.paused) {
+        let newWindows = data.windows;
+        let earliest = newWindows.length ? Math.min(...newWindows.map((win) => win.index)) : null;
+        let hasOlder = data.has_older;
+        if (state.liveCursor != null && earliest != null && earliest > state.liveCursor + 1) {
+          while (earliest > state.liveCursor && hasOlder) {
+            const page = await fetchJSON(`/api/runs/${encodeURIComponent(requestedRun)}?before=${earliest}`);
+            if (state.run !== requestedRun || state.runGeneration !== generation || state.paused) break;
+            if (!page.windows.length) { hasOlder = false; break; }
+            newWindows = mergeWindows(newWindows, page.windows);
+            const nextEarliest = Math.min(...newWindows.map((win) => win.index));
+            if (nextEarliest >= earliest) { hasOlder = false; break; }
+            earliest = nextEarliest;
+            hasOlder = page.has_older;
+          }
+        }
+        if (state.run === requestedRun && state.runGeneration === generation && !state.paused) {
+          if (data.windows.length && (state.liveCursor == null || earliest <= state.liveCursor || !hasOlder)) {
+            state.liveCursor = Math.max(state.liveCursor ?? 0, ...data.windows.map((win) => win.index));
+          }
+          render({
+            ...data,
+            has_older: state.data?.windows.length ? Boolean(state.data.has_older) : data.has_older,
+            windows: mergeWindows(state.data?.windows || [], newWindows),
+          });
+        }
+      }
     }
     $("connection").className = "connection connected"; $("connection").replaceChildren(node("i"), document.createTextNode(state.paused ? "Updates paused" : "Connected"));
   } catch (error) { $("connection").className = "connection offline"; $("connection").replaceChildren(node("i"), document.createTextNode("Reconnecting")); notice("Could not refresh output. Your current view is preserved; retrying automatically."); }
   setTimeout(refresh, 1000);
 }
 
-$("run").addEventListener("change", async () => { $("follow").checked = false; changeRun($("run").value); if (state.run) { try { render(await fetchJSON(`/api/runs/${encodeURIComponent(state.run)}`)); } catch { notice("This run is unavailable. Select another run."); } } });
+$("run").addEventListener("change", async () => { $("follow").checked = false; changeRun($("run").value); if (state.run) { const run = state.run, generation = state.runGeneration; try { const data = await fetchJSON(`/api/runs/${encodeURIComponent(run)}`); if (state.run === run && state.runGeneration === generation) { if (data.windows.length) state.liveCursor = Math.max(...data.windows.map((win) => win.index)); render(data); } } catch { if (state.run === run && state.runGeneration === generation) notice("This run is unavailable. Select another run."); } } });
 $("pause").addEventListener("click", () => { state.paused = !state.paused; $("pause").setAttribute("aria-pressed", String(state.paused)); text("pause", state.paused ? "Resume updates" : "Pause updates"); });
 $("search").addEventListener("input", applySearch);
-$("older").addEventListener("click", async () => { if (!state.data?.windows.length) return; const before = Math.min(...state.data.windows.map((win) => win.index)); try { const data = await fetchJSON(`/api/runs/${encodeURIComponent(state.run)}?before=${before}`); state.before = before; render(data); } catch { notice("Could not load older windows. Please retry."); } });
-$("live").addEventListener("click", () => { state.before = null; state.paused = false; $("pause").setAttribute("aria-pressed", "false"); text("pause", "Pause updates"); notice(""); });
+async function loadOlder() {
+  if (state.loadingOlder || !state.data?.windows.length || !state.data.has_older || !state.run) return;
+  const before = Math.min(...state.data.windows.map((win) => win.index));
+  const run = state.run, generation = state.runGeneration;
+  state.loadingOlder = true; $("older").disabled = true;
+  try {
+    const data = await fetchJSON(`/api/runs/${encodeURIComponent(run)}?before=${before}`);
+    if (state.run !== run || state.runGeneration !== generation) return;
+    state.before ??= before;
+    render({ ...data, windows: mergeWindows(state.data?.windows || [], data.windows) });
+  } catch {
+    if (state.run === run && state.runGeneration === generation) notice("Could not load older windows. Please retry.");
+  } finally {
+    if (state.run === run && state.runGeneration === generation) {
+      state.loadingOlder = false;
+      if (state.data) $("older").disabled = !state.data.has_older;
+      observeHistorySentinel();
+    }
+  }
+}
+function observeHistorySentinel() {
+  if (!historyObserver) return;
+  if (state.data?.has_older && !state.loadingOlder) historyObserver.observe($("history-sentinel"));
+  else historyObserver.unobserve($("history-sentinel"));
+}
+$("older").addEventListener("click", loadOlder);
+$("live").addEventListener("click", () => { state.before = null; state.paused = false; $("pause").setAttribute("aria-pressed", "false"); text("pause", "Pause updates"); notice(""); $("windows").scrollIntoView({ block: "start", behavior: "smooth" }); });
+const historyObserver = "IntersectionObserver" in window
+  ? new IntersectionObserver((entries) => { if (entries.some((entry) => entry.isIntersecting)) void loadOlder(); }, { rootMargin: "240px 0px" })
+  : null;
 document.addEventListener("keydown", (event) => { if (event.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) { event.preventDefault(); $("search").focus(); } });
 initializeMonitor();

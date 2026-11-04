@@ -366,19 +366,23 @@ RTF, recent timing charts, source/device information, and text paired with its
 timestamped audio. Rejections are displayed with reasons and no invented clip.
 Activity status is inferred from saved files until final runtime JSON exists.
 
-Select a run, follow the newest run automatically, search visible text/speakers,
-edit transcript and speaker labels, save selections for finetuning, pause updates,
-or page through older windows. History view is static until
-**Back to live** is selected. Searching applies to the displayed windows.
-Refresh preserves existing audio elements so playing a clip is not reset.
-Audio is streamed from saved WAVs with byte-range support for seeking, without
-base64-embedding every recording in each refresh.
+Select a run, follow the newest run automatically, search text/speakers, edit
+transcript and speaker labels, save selections for finetuning, or pause updates.
+Older pages append to the current run and load automatically as the list nears
+its end; **Load older windows** remains available as a manual fallback. New
+windows continue to arrive while older history is loaded. **Back to live** keeps
+loaded history and returns the page to the newest window without stopping audio.
+Paging preserves existing window cards, unsaved label edits, and active players.
+Searching applies to all loaded windows. Audio is streamed from saved WAVs with
+byte-range support for seeking, without base64-embedding recordings in refreshes.
 
 CSV indexing reads only new complete records, tolerates partial/multiline writes,
 and retains 200 recent rows plus aggregate counters per cached run. Historical
-paging reads older CSV rows on demand. Index/manifest caches are bounded; the
-monitor does not retain the entire collection in RAM. HTTP audio routes are
-limited to generated clip paths within the selected output run.
+pages read complete CSV rows on demand, and the live view catches up across
+bounded pages if more than one recent page arrives between polls. Sparse window
+indices do not imply extra pages. Manifest caches are bounded; the monitor does
+not load all transcript manifests on each refresh. HTTP audio routes are limited
+to generated clip paths within the selected output run.
 
 For each accepted utterance, edit the transcript and speaker ID and select
 **Include in dataset**, then choose **Save label**. Reviewed labels are stored in

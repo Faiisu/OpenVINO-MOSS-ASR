@@ -52,6 +52,7 @@
           <span id="dataset-status" class="dataset-status" role="status">Labels are stored with their source run until exported.</span>
         </section>
         <div id="windows" class="windows"><div class="empty"><span class="empty-symbol">≋</span><h3>Waiting for speech</h3><p>Your collection run will appear here automatically.</p></div></div>
+        <div id="history-sentinel" aria-hidden="true"></div>
         <div id="no-matches" class="empty" hidden><h3>No matching utterances</h3><p>Try a different word or speaker label.</p></div>
         <div class="history-actions"><button id="older" class="button secondary" disabled>Load older windows</button><button id="live" class="button" hidden>Back to live</button></div>
         <div class="panel-footnote">Results arrive after each audio window is processed. Speaker IDs are local to each window. The exported JSONL transcript uses clip-relative timestamps, a MOSS speaker token, and the reviewed text.</div>

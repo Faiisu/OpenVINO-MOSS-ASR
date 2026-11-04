@@ -46,6 +46,7 @@ class RunIndex:
         self.offset = 0
         self.header = None
         self.rows = deque(maxlen=200)
+        self.minimum_index = None
         self.totals = {"reported_windows": 0, "processed_windows": 0, "failed_windows": 0,
                        "partial_windows": 0, "clip_count": 0, "rejected_count": 0,
                        "audio_seconds": 0.0, "latency_seconds": 0.0}
@@ -78,7 +79,8 @@ class RunIndex:
                     elif len(values) != len(self.header):
                         break
                     else:
-                        self.add_row(dict(zip(self.header, values)))
+                        row = dict(zip(self.header, values))
+                        self.add_row(row)
                     self.offset = file.tell()
                     record = b""
         except FileNotFoundError:
@@ -90,6 +92,9 @@ class RunIndex:
 
     def add_row(self, row):
         self.rows.append(row)
+        index = number(row.get("segment_index"))
+        if index is not None:
+            self.minimum_index = index if self.minimum_index is None else min(self.minimum_index, index)
         totals = self.totals
         totals["reported_windows"] += 1
         totals["failed_windows"] += row.get("status") == "failed"
@@ -177,6 +182,7 @@ class RunIndex:
                      weighted_rtf=(stats["latency_seconds"] / stats["audio_seconds"]
                                    if stats["audio_seconds"] else None))
         source = self.config.get("source_audio")
+        oldest = number(rows[0].get("segment_index")) if rows else None
         return {"id": self.root.name, "status": status, "stats": stats,
                 "source": Path(source).name if source else "BY-V microphone",
                 "device": self.config.get("ov_device", "GPU"),
@@ -186,19 +192,38 @@ class RunIndex:
                 "last_activity_at": datetime.fromtimestamp(latest, timezone.utc).isoformat(),
                 "errors": runtime.get("errors", []) if runtime else [],
                 "windows": [self.window(row) for row in reversed(rows)],
-                "has_older": bool(rows and int(rows[0]["segment_index"]) > 1)}
+                "has_older": bool(oldest is not None and self.minimum_index is not None
+                                   and self.minimum_index < oldest)}
 
     def history(self, before, limit):
         rows = deque(maxlen=limit)
         path = self.root / "reports" / "segments.csv"
         if path.is_file():
-            with path.open(newline="", encoding="utf-8") as file:
-                for row in csv.DictReader(file):
-                    index = number(row.get("segment_index"))
-                    if index is not None and index < before and row.get("status"):
-                        rows.append(row)
+            with path.open("rb") as file:
+                header = None
+                record = b""
+                while line := file.readline():
+                    record += line
+                    if not line.endswith(b"\n"):
+                        break
+                    try:
+                        parsed = list(csv.reader(io.StringIO(record.decode("utf-8")), strict=True))
+                    except (UnicodeDecodeError, csv.Error):
+                        continue
+                    if len(parsed) != 1:
+                        break
+                    values = parsed[0]
+                    if header is None:
+                        header = values
+                    elif len(values) != len(header):
+                        break
+                    else:
+                        row = dict(zip(header, values))
+                        index = number(row.get("segment_index"))
+                        if index is not None and index.is_integer() and index < before and row.get("status"):
+                            rows.append(row)
+                    record = b""
         return list(rows)
-
 
 class MonitorStore:
     """Serialize index updates shared by all read-only HTTP clients."""

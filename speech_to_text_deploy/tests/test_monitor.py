@@ -106,6 +106,54 @@ class MonitorTests(unittest.TestCase):
             csv.writer(file).writerow(REPORT_COLUMNS)
         self.assertEqual(store.snapshot(self.root.name)["stats"]["reported_windows"], 0)
 
+    def test_older_pages_are_cumulative_and_sparse_indices_do_not_create_phantom_pages(self):
+        for index in range(2, 48):
+            self.append({
+                "segment_index": index, "status": "success", "offset_seconds": index * 30,
+                "audio_seconds": 30, "queue_wait_seconds": 0, "inference_seconds": 2,
+                "trim_and_store_seconds": 0, "latency_seconds": 2, "rtf": .1,
+                "clip_count": 0, "rejected_count": 0,
+            })
+        store = MonitorStore(self.base)
+        newest = store.snapshot(self.root.name, limit=15)
+        self.assertEqual([window["index"] for window in newest["windows"]], list(range(47, 32, -1)))
+        self.assertTrue(newest["has_older"])
+        middle = store.snapshot(self.root.name, limit=15, before=33)
+        self.assertEqual([window["index"] for window in middle["windows"]], list(range(32, 17, -1)))
+        self.assertTrue(middle["has_older"])
+        oldest = store.snapshot(self.root.name, limit=15, before=18)
+        self.assertEqual([window["index"] for window in oldest["windows"]], list(range(17, 2, -1)))
+        self.assertTrue(oldest["has_older"])
+        final = store.snapshot(self.root.name, limit=15, before=3)
+        self.assertEqual([window["index"] for window in final["windows"]], [2])
+        self.assertFalse(final["has_older"])
+        empty = store.snapshot(self.root.name, limit=15, before=2)
+        self.assertEqual(empty["windows"], [])
+        self.assertFalse(empty["has_older"])
+
+    def test_history_ignores_an_unflushed_partial_csv_row(self):
+        self.append(self.row(2))
+        partial = io.StringIO(newline="")
+        csv.DictWriter(partial, fieldnames=REPORT_COLUMNS).writerow({
+            "segment_index": 3, "status": "success", "offset_seconds": 60,
+            "audio_seconds": 30, "clip_count": 1,
+        })
+        self.csv.write_bytes(self.csv.read_bytes() + partial.getvalue().encode("utf-8").rstrip(b"\n"))
+        store = MonitorStore(self.base)
+        snapshot = store.snapshot(self.root.name, limit=15, before=4)
+        self.assertEqual([window["index"] for window in snapshot["windows"]], [2])
+
+    def test_history_keeps_complete_multiline_csv_rows(self):
+        self.append({"segment_index": 2, "status": "failed", "error": "failure\ncontinued"})
+        self.append({"segment_index": 3, "status": "success", "audio_seconds": 30,
+                     "latency_seconds": 2, "clip_count": 0, "rejected_count": 0})
+        store = MonitorStore(self.base)
+
+        snapshot = store.snapshot(self.root.name, limit=15, before=4)
+
+        self.assertEqual([window["index"] for window in snapshot["windows"]], [3, 2])
+        self.assertEqual(snapshot["windows"][1]["error"], "failure\ncontinued")
+
     def test_http_serves_no_auth_api_and_byte_exact_seekable_audio(self):
         self.append(self.row(rejected=True))
         with MonitorServer(("127.0.0.1", 0), self.base) as server:
