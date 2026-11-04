@@ -27,8 +27,8 @@ REPORT_COLUMNS = (
 @dataclass(frozen=True)
 class GatheringConfig:
     output_dir: str
-    model_dir: str = str(ROOT / ".tools" / "moss-openvino-fp16")
-    model_id: str = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+    model_dir: str = str(ROOT / ".tools" / "moss-subway-openvino-fp16")
+    model_id: str = "faiisu/moss-asr-th-finetuned-subway"
     ov_device: str = "GPU"
     input_device: int | str | None = None
     samplerate: int = 48000
@@ -40,6 +40,7 @@ class GatheringConfig:
     max_audio_seconds: float | None = None
     max_new_tokens: int = 5120
     hotwords: tuple[str, ...] = ("Subway", "ซัพเวย์", "ซับเวย์")
+    vad_enabled: bool = True
     vad_threshold: float = 0.9
     vad_min_speech_duration_ms: int = 1000
     vad_min_silence_duration_ms: int = 100
@@ -73,6 +74,8 @@ class GatheringConfig:
             raise ValueError("Optional recording duration must be positive and finite.")
         if self.min_free_bytes < 0:
             raise ValueError("Free-storage reserve cannot be negative.")
+        if not isinstance(self.vad_enabled, bool):
+            raise ValueError("VAD enabled must be a boolean.")
         if not math.isfinite(self.vad_threshold) or not 0 < self.vad_threshold <= 1:
             raise ValueError("VAD threshold must be finite and in (0, 1].")
         if (isinstance(self.vad_min_speech_duration_ms, bool)
@@ -128,6 +131,7 @@ def load_settings(path=None):
     values.setdefault("live_audio_url", "http://127.0.0.1:18000/api/live-audio/publish")
     values.setdefault("hotwords", ["Subway", "ซัพเวย์", "ซับเวย์"])
     values.setdefault("vad_threshold", 0.9)
+    values.setdefault("vad_enabled", True)
     values.setdefault("vad_min_speech_duration_ms", 1000)
     values.setdefault("vad_min_silence_duration_ms", 100)
     values.setdefault("vad_speech_pad_ms", 30)

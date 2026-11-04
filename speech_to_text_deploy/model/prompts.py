@@ -7,6 +7,12 @@ def transcription_prompt(default_prompt, languages, *, hotwords=(), audio_durati
     prompt = default_prompt
     if hotwords:
         prompt += " Hotwords: " + ", ".join(hotwords) + "."
+        if any(word.casefold() in {"subway", "ซัพเวย์", "ซับเวย์"} for word in hotwords):
+            #default
+            prompt += (
+                " Focus on the keyword Subway (ซัพเวย์, ซับเวย์) in restaurant greetings."
+                " Preserve every audible mention of this name without adding words not heard."
+            )            
     if languages:
         prompt += (" The audio may contain the following languages: " + ", ".join(languages)
                    + ". Transcribe speech in its original language without translation."

@@ -75,6 +75,7 @@ def export_model(model_id, output_dir):
     import openvino as ov
     import transformers
     from transformers import AutoModelForCausalLM, AutoProcessor
+    from transformers.dynamic_module_utils import get_class_from_dynamic_module
     from transformers.utils.hub import cached_file
 
     output_dir = Path(output_dir)
@@ -88,7 +89,14 @@ def export_model(model_id, output_dir):
         with profiler.stage("source_weights_load"):
             model = AutoModelForCausalLM.from_pretrained(
                 model_id, trust_remote_code=True, dtype=torch.float32, attn_implementation="eager").eval()
-            processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+            processor_class = AutoProcessor
+            processor_reference = getattr(model.config, "auto_map", {}).get("AutoProcessor")
+            if processor_reference:
+                # Some fine-tunes omit processor_config.auto_map; the built-in
+                # namesake uses different audio inputs than this source model.
+                processor_class = get_class_from_dynamic_module(processor_reference, model_id)
+                processor_class.register_for_auto_class("AutoProcessor")
+            processor = processor_class.from_pretrained(model_id, trust_remote_code=True)
         config = model.config.text_config
         with profiler.stage("processor_and_embedding_save"):
             processor.save_pretrained(output_dir)

@@ -44,7 +44,7 @@ install_units() {
   require_service_user
 
   local python_bin="${PROJECT_ROOT}/.venv/bin/python"
-  local model_dir="${PROJECT_ROOT}/.tools/moss-openvino-fp16"
+  local model_dir="${PROJECT_ROOT}/.tools/moss-subway-openvino-fp16"
   local uv_path="$(command -v uv || true)"
   local user_home="$(getent passwd "${SERVICE_USER}" | cut -d: -f6)"
   local service_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

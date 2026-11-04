@@ -147,11 +147,12 @@ def run_gathering(config, *, stop_event=None):
                             qos=config.mqtt_qos, keepalive_seconds=config.mqtt_keepalive_seconds,
                             connect_timeout_seconds=config.mqtt_connect_timeout_seconds,
                             publish_timeout_seconds=config.mqtt_publish_timeout_seconds))
-                    vad = stack.enter_context(SileroVAD(
-                        threshold=config.vad_threshold,
-                        min_speech_duration_ms=config.vad_min_speech_duration_ms,
-                        min_silence_duration_ms=config.vad_min_silence_duration_ms,
-                        speech_pad_ms=config.vad_speech_pad_ms))
+                    if config.vad_enabled:
+                        vad = stack.enter_context(SileroVAD(
+                            threshold=config.vad_threshold,
+                            min_speech_duration_ms=config.vad_min_speech_duration_ms,
+                            min_silence_duration_ms=config.vad_min_silence_duration_ms,
+                            speech_pad_ms=config.vad_speech_pad_ms))
                     session = stack.enter_context(OpenVinoSession(
                         config.model_id, config.model_dir, ov_device=config.ov_device,
                         audio_window_seconds=config.segment_seconds))
@@ -172,9 +173,10 @@ def run_gathering(config, *, stop_event=None):
                                    queue_wait_seconds=started - item.queued_at)
                         try:
                             _write_progress(progress_path, row)
-                            speech_regions = vad.detect(item.path)
-                            speech_seconds = sum(end - start for start, end in speech_regions)
-                            if speech_regions:
+                            speech_regions = vad.detect(item.path) if vad is not None else []
+                            speech_seconds = (sum(end - start for start, end in speech_regions)
+                                              if vad is not None else None)
+                            if not config.vad_enabled or speech_regions:
                                 raw, segments = session.transcribe(
                                     item.path, config.max_new_tokens, config.languages,
                                     config.hotwords)
@@ -189,7 +191,9 @@ def run_gathering(config, *, stop_event=None):
                                 save_audio=config.save_audio,
                                 save_transcript=config.save_transcript,
                                 return_manifest=True,
-                                vad={"engine": "Silero VAD", "threshold": config.vad_threshold,
+                                vad={"enabled": config.vad_enabled,
+                                     "engine": "Silero VAD" if config.vad_enabled else None,
+                                     "threshold": config.vad_threshold,
                                      "min_speech_duration_ms": config.vad_min_speech_duration_ms,
                                      "min_silence_duration_ms": config.vad_min_silence_duration_ms,
                                      "speech_pad_ms": config.vad_speech_pad_ms,
@@ -203,7 +207,7 @@ def run_gathering(config, *, stop_event=None):
                                 raise RuntimeError("Preprocessing tensor allocations did not return to baseline.")
                             runtime["torch_allocated_after_inference"] = allocated
                             runtime["torch_reserved_after_inference"] = reserved
-                            status = ("no_speech" if not speech_regions else
+                            status = ("no_speech" if config.vad_enabled and not speech_regions else
                                       "partial" if rejected_count else "success")
                             row.update(status=status,
                                        output_ready_monotonic_seconds=completed,

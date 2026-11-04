@@ -99,7 +99,15 @@ assert not any(name == "speech_to_text" or name.startswith("speech_to_text.") fo
             self.assertIn(f"0 <= start < end <= {duration} seconds", prompt)
             self.assertIn("Thai, English", prompt)
             self.assertIn("Hotwords: Subway, ซัพเวย์, ซับเวย์.", prompt)
+            self.assertIn("Focus on the keyword Subway", prompt)
+            self.assertIn("without adding words not heard.", prompt)
         for duration in (0, -1, float("nan"), float("inf")):
             with self.assertRaises(ValueError):
                 transcription_prompt("Base.", None, audio_duration_seconds=duration)
         self.assertNotEqual(new_run_dir(), new_run_dir())
+
+    def test_subway_focus_requires_a_matching_hotword(self):
+        for alias in ("SUBWAY", "ซัพเวย์", "ซับเวย์"):
+            self.assertIn("Focus on the keyword Subway",
+                          transcription_prompt("Base.", None, hotwords=[alias]))
+        self.assertNotIn("Focus on the keyword Subway", transcription_prompt("Base.", None, hotwords=["Coffee"]))

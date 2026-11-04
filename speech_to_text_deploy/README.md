@@ -20,13 +20,35 @@ through both the notebook and a portable HTML report.
 - Prompt formatting lives in [model/prompts.py](model/prompts.py); edit the
   `hotwords` and `languages` values in `settings.json` instead of changing code.
   The session supplies the actual audio duration automatically.
+  When hotwords include `Subway`, `ซัพเวย์`, or `ซับเวย์`, the prompt prioritizes
+  audible mentions of that brand in restaurant greetings. It still requests
+  the full transcript and explicitly asks not to add words that are not heard.
 - Run [output_gathering.py](output_gathering.py) for continuous data collection.
 - Each captured window passes through Silero VAD before MOSS. The defaults use
   speech probability threshold `0.9` and minimum speech duration `1000 ms`;
   windows with no qualifying speech are retained and skipped by MOSS.
+  Set `vad_enabled` to `false` in an evaluation config to bypass VAD entirely
+  and send every window to MOSS, including short clips. It defaults to `true`
+  when omitted. Disabled-VAD manifests record `enabled: false`, no engine,
+  and unknown speech duration rather than classifying the full clip as speech.
 - Open the [live monitor](http://localhost:18000/) while collecting. Start its
   independent server with the command under **Live output monitor**.
 - Open [output_gathering.ipynb](output_gathering.ipynb) for optional interactive analysis.
+- Open [compare_greetings_1b1c0ac2.ipynb](compare_greetings_1b1c0ac2.ipynb) for direct
+  inference on all saved utterances from run `1b1c0ac2` whose original transcript
+  contains `สวัสดี`. It compares the original text with the newly deployed model
+  and embeds an audio player for every input. Run all cells using the project
+  `.venv`; there is no collection pipeline or VAD. Each clip loads and unloads
+  its model session. Short clips use a 128-token output limit; token-limited
+  raw responses are explicitly marked as partial, and malformed responses and
+  inference errors remain visible. The diagnostic `allow_incomplete=True`
+  option retains partial output; normal deployment still rejects token limits.
+  The original generated text is a comparison baseline, not a human reference.
+  Validated on 2026-11-02: all 53 inputs were processed with no inference
+  exceptions; 3 outputs reached the token limit and 12 complete outputs could
+  not be parsed. Raw responses are retained in both cases. All 53 audio players
+  embed the exact original WAV bytes. Every clip reported zero OpenVINO
+  allocations after unload; final PyTorch tensor allocations were also zero.
 - Use `uv run --no-project --python .venv/bin/python -m speech_to_text_deploy run`
   from the project root for command-line collection.
 
@@ -114,12 +136,29 @@ For the notebook, install the notebook dependency set instead:
 uv pip install --python .venv/bin/python -r speech_to_text_deploy/requirements-notebook.txt --torch-backend=xpu
 ```
 
-The existing OpenVINO export must be present in `.tools/moss-openvino-fp16`, or
-set `model_dir` in the settings to another compatible export. Required assets
+The default model is
+[`faiisu/moss-asr-th-finetuned-subway`](https://huggingface.co/faiisu/moss-asr-th-finetuned-subway).
+Its OpenVINO export must be present in `.tools/moss-subway-openvino-fp16`, or
+set both `model_dir` and `model_id` in the settings to another compatible export.
+The dataclass defaults and systemd installer's default directory use this export too.
+Required assets
 include the manifest, encoder/decoder graphs and weights, embeddings, tokenizer
 and processor files. Export is an offline preparation step; the deployment uses
 the prepared model and does not export or download model weights during a run.
 The existing [export notebook](../research/openvino_iGPU.ipynb) can prepare it.
+Alternatively, reuse the existing CPU export worker from the project root:
+
+```bash
+uv run --no-project --python .venv/bin/python python -c \
+  'from speech_to_text.openvino_export import export_isolated; export_isolated("faiisu/moss-asr-th-finetuned-subway", ".tools/moss-subway-openvino-fp16")'
+```
+
+The export writes FP16 encoder/decoder weights, embeddings, processor/tokenizer
+assets and a manifest recording the source snapshot and dependency versions.
+Conversion uses the research package only during offline preparation; deployment
+continues to run independently. The original `.tools/moss-openvino-fp16` export
+is retained. Restart an already running collector after changing model settings
+to load the new model.
 
 The default runtime is OpenVINO on Intel GPU with CPU preprocessing. The worker
 sets the OpenCL library environment before loading the model. It does not change
@@ -434,6 +473,61 @@ directory's `STOP` file to request a graceful stop and queue drain. Captured
 source WAVs and completed earlier results remain on disk if a run is interrupted.
 
 ## Validation
+
+### Fine-tuned Subway model (2026-11-02)
+
+Exported `faiisu/moss-asr-th-finetuned-subway` snapshot
+`736dc9e54eb1d2e06123af4b6f24f36c84a6609c` with OpenVINO 2026.4.1,
+PyTorch 2.15.0+xpu and Transformers 5.22.1. The final FP16 export took 42.25 s
+and occupies approximately 2.0 GiB.
+
+The source processor config omits `auto_map`. Transformers otherwise selects
+its built-in processor with the same name, which fails with
+`KeyError: padding_mask` for this model's Whisper features. The offline exporter
+now resolves the processor from the model config's `AutoProcessor` mapping and
+registers it for saving. The export therefore includes the source processor
+code and its `auto_map`; deployment loads it locally without runtime patches.
+
+Real deployment CLI validation used `GPU.0` for both graphs, with MQTT and live
+audio forwarding disabled in separate replay configs:
+
+- A labelled 3.68-second greeting, with VAD disabled, completed successfully:
+  one saved utterance, no rejected intervals, 3.24 s latency, RTF 0.880.
+  The result was `Subway สวัสดีค่ะ ไว้ด้วยเมนูก่อนได้นะคะ`, whereas the reviewed
+  reference was `ซับเวย์สวัสดีค่ะ แวะดูเมนูก่อนได้นะคะ`. This is an operational
+  smoke test, not evidence of improved accuracy or an independent held-out score.
+- The first 63 seconds of `audio/standby/subway-test-02-thai_n_eng.wav` replayed
+  through VAD and MOSS as 30/30/3-second windows. All three succeeded, generating
+  24 utterance WAV/JSON pairs and no rejected intervals. All 24 WAVs matched
+  their corresponding source samples exactly, including native 48 kHz PCM16.
+  Inference totalled 29.47 s; worker workflow time was 35.96 s. Weighted latency
+  RTF was 1.152, including queue waiting from unpaced replay. Another collector
+  remained active; these measurements are not a controlled live throughput test.
+- Both successful runs reported zero OpenVINO allocations after unload and
+  zero PyTorch tensor allocations. The initial processor-failure run also
+  released all OpenVINO allocations. Each worker exited after cleanup.
+- All 45 deployment tests and all 3 OpenVINO tests passed. The latter include
+  numerical stateful decoder checks against PyTorch. No editor diagnostics
+  remained in the changed Python modules.
+
+The replay configuration copies `settings.json`, retaining the model and VAD
+settings, then overrides `mqtt_enabled` and `live_audio_enabled` to `false`.
+Run the public CLI with that config:
+
+```bash
+uv run --no-project --python .venv/bin/python -m speech_to_text_deploy run \
+  --config .tools/subway-validation/replay-settings.json \
+  --source-audio audio/standby/subway-test-02-thai_n_eng.wav \
+  --duration 63 --fast-replay --output-dir outputs/subway-finetuned-deploy-replay
+```
+
+Use a new output directory for each repeat. Local results:
+[63-second replay report](../outputs/subway-finetuned-deploy-replay/reports/summary.html),
+[runtime and allocation metrics](../outputs/subway-finetuned-deploy-replay/reports/runtime.json),
+and [labelled greeting report](../outputs/subway-finetuned-labelled-smoke-fixed/reports/summary.html).
+The pre-existing live collector was not restarted; it adopts the new model on
+its next start. Systemd installation and MQTT publishing were not exercised by
+these replay tests.
 
 Run focused tests from the project root:
 

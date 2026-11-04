@@ -213,7 +213,7 @@ class GatheringTests(unittest.TestCase):
             self.assertFalse(list((root / "result").glob("*.wav")))
 
     def exercise_queue(self, fail_second=False, reject_second=False, no_speech_first=False,
-                       save_audio=True, save_transcript=True):
+                       save_audio=True, save_transcript=True, vad_enabled=True):
         # This fake isolates scheduling/recovery assertions; real GPU inference
         # is exercised separately with BY-V and the cached full MOSS model.
         class Session:
@@ -246,6 +246,8 @@ class GatheringTests(unittest.TestCase):
         class VAD:
             def __init__(self, *, threshold, min_speech_duration_ms,
                          min_silence_duration_ms, speech_pad_ms):
+                if not vad_enabled:
+                    raise AssertionError("Disabled VAD must not be instantiated.")
                 self.threshold = threshold
                 self.min_speech_duration_ms = min_speech_duration_ms
 
@@ -286,6 +288,7 @@ class GatheringTests(unittest.TestCase):
             config = GatheringConfig(output_dir=str(root / "run"), model_dir=str(model),
                                      source_audio=str(source), replay_realtime=False,
                                      live_audio_enabled=False, save_audio=save_audio,
+                                     vad_enabled=vad_enabled,
                                      save_transcript=save_transcript)
             Publisher.messages = []
             with (patch("speech_to_text_deploy.model.session.OpenVinoSession", Session),
@@ -306,7 +309,15 @@ class GatheringTests(unittest.TestCase):
                 self.assertTrue((root / "run/recordings/segment-000003.wav").is_file())
                 self.assertEqual(rows[-1]["rtf"], "")
             else:
-                if no_speech_first:
+                if not vad_enabled:
+                    self.assertEqual([row["status"] for row in rows], ["success"] * 3)
+                    self.assertEqual(Session.calls, 3)
+                    manifest = json.loads((root / "run/results/segment-000001/transcript.json").read_text())
+                    self.assertFalse(manifest["vad"]["enabled"])
+                    self.assertIsNone(manifest["vad"]["engine"])
+                    self.assertIsNone(manifest["vad"]["speech_seconds"])
+                    self.assertEqual(rows[0]["vad_speech_seconds"], "")
+                elif no_speech_first:
                     self.assertEqual([row["status"] for row in rows], ["no_speech", "success", "success"])
                     self.assertEqual(Session.calls, 2)
                     runtime = json.loads((root / "run/reports/runtime.json").read_text())
@@ -351,3 +362,6 @@ class GatheringTests(unittest.TestCase):
 
     def test_no_speech_window_skips_model_and_continues_queue(self):
         self.exercise_queue(no_speech_first=True)
+
+    def test_disabled_vad_sends_every_window_to_model_without_loading_vad(self):
+        self.exercise_queue(no_speech_first=True, vad_enabled=False)

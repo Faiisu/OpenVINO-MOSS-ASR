@@ -106,7 +106,7 @@ class OpenVinoSession:
         del history[:-METRIC_HISTORY_LIMIT]
 
     def transcribe_batch(self, audio_paths, max_new_tokens, languages=None, *, hotwords=(),
-                         audio_duration_seconds=None):
+                         audio_duration_seconds=None, allow_incomplete=False):
         from moss_transcribe_diarize import parse_transcript
         from moss_transcribe_diarize.inference_utils import DEFAULT_PROMPT
         if not audio_paths or max_new_tokens < 1:
@@ -165,7 +165,8 @@ class OpenVinoSession:
                 mask = np.concatenate((mask, np.ones((len(audio_paths), 1), dtype=mask.dtype)), axis=1)
                 if step == 0 or (step + 1) % 128 == 0:
                     print(f'OpenVINO generated {step + 1}/{max_new_tokens} steps', flush=True)
-            if not finished.all():
+            batch_metrics['generation_complete'] = finished.tolist()
+            if not finished.all() and not allow_incomplete:
                 raise RuntimeError('OpenVINO generation reached the token limit; transcript may be incomplete.')
             results = []
             for tokens in generated:
@@ -183,12 +184,15 @@ class OpenVinoSession:
                 self.decoder_request.reset_state()
             release_model_memory(self.device)
 
-    def transcribe(self, audio_path, max_new_tokens, languages=None, hotwords=()):
+    def transcribe(self, audio_path, max_new_tokens, languages=None, hotwords=(), *,
+                   allow_incomplete=False):
+        """Return raw/parsed output; opt in to inspecting token-limited responses."""
         duration = None
         if self.audio_window_seconds is not None:
             from ..audio.io import open_audio_source
             with open_audio_source(audio_path) as source:
                 duration = min(self.audio_window_seconds, source.frames / source.samplerate)
         results, _ = self.transcribe_batch([str(audio_path)], max_new_tokens, languages,
-                                           hotwords=hotwords, audio_duration_seconds=duration)
+                                           hotwords=hotwords, audio_duration_seconds=duration,
+                                           allow_incomplete=allow_incomplete)
         return results[0]
